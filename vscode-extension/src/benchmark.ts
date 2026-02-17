@@ -1490,7 +1490,9 @@ async function evaluateQuality(
     outputs: { config: BenchConfig; output: string }[],
     timeout: number,
     judgeModels: { claude: string; openai: string },
-): Promise<{ averaged: Partial<Record<BenchConfig, QualityScores>>; details: JudgeDetail[]; debateTriggered?: boolean; tiebreakerUsed?: boolean } | null> {
+    tiebreakerModel?: string,
+    judgeThreshold = 0.2,
+): Promise<{ averaged: Partial<Record<BenchConfig, QualityScores>>; details: JudgeDetail[]; debateTriggered: boolean; tiebreakerUsed: boolean } | null> {
     const valid = outputs.filter(o => o.output.length > 0);
     if (valid.length === 0) return null;
 
@@ -1498,8 +1500,14 @@ async function evaluateQuality(
     const labels = 'ABCDEFGH'.split('').slice(0, valid.length);
     const shuffled = shuffle(valid);
     const labelMap = new Map<string, BenchConfig>();
+    const configToLabel = new Map<BenchConfig, string>();
     for (let i = 0; i < shuffled.length; i++) {
         labelMap.set(labels[i], shuffled[i].config);
+        configToLabel.set(shuffled[i].config, labels[i]);
+    }
+
+    function labelToConfig(scores: Partial<Record<BenchConfig, QualityScores>>): Partial<Record<BenchConfig, QualityScores>> {
+        return scores; // already config-based from parseJudgeResponse
     }
 
     const evalPrompt = buildEvalPrompt(prompt, shuffled, labels);
@@ -1510,7 +1518,8 @@ async function evaluateQuality(
         { name: 'GPT', call: (p, t) => callOpenAI(p, t, judgeModels.openai) },
     ];
 
-    const judgeResults = await Promise.all(
+    // ─── Round 1: independent scoring ───
+    const round1Results = await Promise.all(
         judges.map(async (judge) => {
             try {
                 const r = await judge.call(evalPrompt, timeout);
@@ -1523,27 +1532,128 @@ async function evaluateQuality(
         })
     );
 
-    const successfulScores = judgeResults.filter(j => j.scores !== null);
-    if (successfulScores.length === 0) return null;
+    const round1Valid = round1Results.filter(j => j.scores !== null);
+    if (round1Valid.length === 0) return null;
 
-    // Log which judges responded
-    const judgeStatus = judgeResults.map(j => `${j.name}:${j.scores ? 'OK' : 'FAIL'}`).join(' ');
-    process.stdout.write(`[${judgeStatus}] `);
+    const r1Status = round1Results.map(j => `${j.name}:${j.scores ? 'OK' : 'FAIL'}`).join(' ');
+    process.stdout.write(`[R1 ${r1Status}] `);
 
-    // Collect individual judge details
-    const details: JudgeDetail[] = successfulScores.map(j => ({
-        judge: j.name,
+    const details: JudgeDetail[] = round1Valid.map(j => ({
+        judge: j.name + ' (R1)',
         scores: j.scores!,
     }));
 
     const allConfigs = [...new Set(valid.map(v => v.config))];
 
-    const averaged = averageJudgeScores(
-        successfulScores.map(j => j.scores!),
-        allConfigs,
+    // Check if only 1 judge responded — no divergence possible
+    if (round1Valid.length < 2) {
+        const averaged = averageJudgeScores(round1Valid.map(j => j.scores!), allConfigs);
+        return { averaged, details, debateTriggered: false, tiebreakerUsed: false };
+    }
+
+    // ─── Check divergence ───
+    const divergentConfigs: BenchConfig[] = [];
+    for (const cfg of allConfigs) {
+        const totals = round1Valid.filter(j => j.scores![cfg]).map(j => j.scores![cfg]!.total);
+        if (totals.length < 2) continue;
+        const diff = Math.abs(totals[0] - totals[1]) / 10;
+        if (diff > judgeThreshold) divergentConfigs.push(cfg);
+    }
+
+    if (divergentConfigs.length === 0) {
+        const averaged = averageJudgeScores(round1Valid.map(j => j.scores!), allConfigs);
+        return { averaged, details, debateTriggered: false, tiebreakerUsed: false };
+    }
+
+    // ─── Round 2: DEBATE on divergent configs ───
+    const divergentLabels = divergentConfigs.map(c => configToLabel.get(c)!).filter(Boolean);
+    const divergentNames = divergentConfigs.map(c => CONFIG_SHORT[c]);
+    process.stdout.write(`[DEBATE: ${divergentNames.join(',')}] `);
+
+    // Build debate prompt with anonymized justifications
+    const debateOutputs: string[] = [];
+    for (const cfg of divergentConfigs) {
+        const r1scores = round1Valid.map((j, idx) => {
+            const s = j.scores![cfg];
+            return s ? `Judge ${String.fromCharCode(65 + idx)}: ${s.total}/10 — "${s.justification}"` : '';
+        }).filter(Boolean);
+        debateOutputs.push(`Config ${configToLabel.get(cfg)}:\n${r1scores.join('\n')}`);
+    }
+
+    const debatePrompt = `You are a code quality evaluator in a calibration round.
+Two judges disagreed (>20% divergence) on the following configurations.
+
+## Task
+${prompt}
+
+## Scores from Round 1 (anonymized):
+${debateOutputs.join('\n\n')}
+
+Re-evaluate ONLY these divergent configurations. Consider the other judge's reasoning.
+Respond in the same JSON format as before, with scores 1-10 for each metric.`;
+
+    const round2Results = await Promise.all(
+        judges.map(async (judge) => {
+            try {
+                const r = await judge.call(debatePrompt, timeout);
+                if (r.error) return { name: judge.name, scores: null };
+                return { name: judge.name, scores: parseJudgeResponse(r.content, labels, labelMap) };
+            } catch {
+                return { name: judge.name, scores: null };
+            }
+        })
     );
 
-    return { averaged, details, debateTriggered: false, tiebreakerUsed: false };
+    const round2Valid = round2Results.filter(j => j.scores !== null);
+    const r2Status = round2Results.map(j => `${j.name}:${j.scores ? 'OK' : 'FAIL'}`).join(' ');
+    process.stdout.write(`[R2 ${r2Status}] `);
+
+    // Add round2 details
+    for (const j of round2Valid) {
+        details.push({ judge: j.name + ' (R2)', scores: j.scores! });
+    }
+
+    // Merge: round2 for divergent configs, round1 for the rest
+    const mergedScores = round1Valid.map((r1) => {
+        const r2 = round2Valid.find(r => r.name === r1.name);
+        const merged: Partial<Record<BenchConfig, QualityScores>> = { ...r1.scores! };
+        if (r2) {
+            for (const cfg of divergentConfigs) {
+                if (r2.scores![cfg]) merged[cfg] = r2.scores![cfg];
+            }
+        }
+        return merged;
+    });
+
+    // Check if divergence persists after round 2
+    const stillDivergent: BenchConfig[] = [];
+    for (const cfg of divergentConfigs) {
+        const totals = mergedScores.filter(s => s[cfg]).map(s => s[cfg]!.total);
+        if (totals.length >= 2 && Math.abs(totals[0] - totals[1]) / 10 > judgeThreshold) {
+            stillDivergent.push(cfg);
+        }
+    }
+
+    // ─── Tie-breaker: Gemini (only if divergence persists) ───
+    let tiebreakerUsed = false;
+    if (stillDivergent.length > 0 && tiebreakerModel) {
+        process.stdout.write(`[TIE-BREAK: ${stillDivergent.map(c => CONFIG_SHORT[c]).join(',')}] `);
+        tiebreakerUsed = true;
+
+        try {
+            const tbResult = await callGemini(evalPrompt, timeout, tiebreakerModel);
+            if (!tbResult.error) {
+                const tbScores = parseJudgeResponse(tbResult.content, labels, labelMap);
+                if (tbScores) {
+                    details.push({ judge: 'Gemini (TB)', scores: tbScores });
+                    mergedScores.push(tbScores);
+                }
+            }
+        } catch { /* tie-breaker failure is non-fatal */ }
+    }
+
+    const averaged = averageJudgeScores(mergedScores, allConfigs);
+    return { averaged, details, debateTriggered: true, tiebreakerUsed };
 }
 
 function clamp(n: number): number {
@@ -1750,6 +1860,8 @@ async function main(): Promise<void> {
                 withOutput.map(c => ({ config: c.config, output: c.output })),
                 timeout,
                 judgeModels,
+                tiebreakerModel,
+                judgeThreshold,
             );
 
             if (evalResult) {
