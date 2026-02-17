@@ -1,0 +1,158 @@
+{
+  "name": "cristal-code",
+  "displayName": "CRISTAL CODE",
+  "description": "AI debate orchestrator — Claude Code CLI + OpenAI API collaborate to produce robust code",
+  "version": "0.2.0",
+  "publisher": "JDFRNX54",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cristal-code",
+          "title": "CRISTAL CODE",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cristal-code": [
+        {
+          "type": "webview",
+          "id": "cristalCode.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cristalCode.runDebate",
+        "title": "CRISTAL CODE: Run Debate (auto)",
+        "icon": "$(play)"
+      },
+      {
+        "command": "cristalCode.runSimple",
+        "title": "CRISTAL CODE: Run Simple"
+      },
+      {
+        "command": "cristalCode.runComplex",
+        "title": "CRISTAL CODE: Run Complex"
+      },
+      {
+        "command": "cristalCode.showLogs",
+        "title": "CRISTAL CODE: Show Logs",
+        "icon": "$(output)"
+      },
+      {
+        "command": "cristalCode.configureCLIs",
+        "title": "CRISTAL CODE: Configuration",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "cristalCode.configureOpenAIKey",
+        "title": "CRISTAL CODE: Configure OpenAI Key",
+        "icon": "$(key)"
+      },
+      {
+        "command": "cristalCode.configureAnthropicKey",
+        "title": "CRISTAL CODE: Configure Anthropic Key (optional)",
+        "icon": "$(key)"
+      },
+      {
+        "command": "cristalCode.clearChat",
+        "title": "CRISTAL CODE: Clear Chat",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "cristalCode.stopDebate",
+        "title": "CRISTAL CODE: Stop Debate",
+        "icon": "$(debug-stop)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cristalCode.runDebate",
+          "when": "view == cristalCode.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cristalCode.stopDebate",
+          "when": "view == cristalCode.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "cristalCode.clearChat",
+          "when": "view == cristalCode.chatView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "cristalCode.configureCLIs",
+          "when": "view == cristalCode.chatView",
+          "group": "navigation@4"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CRISTAL CODE",
+      "properties": {
+        "cristalCode.claudeModel": {
+          "type": "string",
+          "default": "claude-sonnet-4-20250514",
+          "enum": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-5-20241022"],
+          "description": "Claude model to use (Anthropic API)"
+        },
+        "cristalCode.claudeTimeout": {
+          "type": "number",
+          "default": 300000,
+          "description": "Timeout for Claude API calls in milliseconds"
+        },
+        "cristalCode.openaiModel": {
+          "type": "string",
+          "default": "gpt-4o",
+          "enum": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini", "o3-mini"],
+          "description": "OpenAI model to use for the consultant"
+        },
+        "cristalCode.openaiTimeout": {
+          "type": "number",
+          "default": 300000,
+          "description": "Timeout for OpenAI API calls in milliseconds"
+        },
+        "cristalCode.testCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Optional test command to run between iterations (e.g., pytest -q, npm test)"
+        },
+        "cristalCode.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Python venv for auxiliary scripts (auto-detected if empty)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "benchmark": "npm run compile && node out/benchmark.js",
+    "bench2": "npm run compile && node out/benchmark_v2.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,0 +1,12 @@
+**/node_modules/**
+benchmark-results/**
+src/benchmark.ts
+src/benchmark_v2.ts
+out/benchmark.js
+out/benchmark_v2.js
+.debate_memory/**
+tools/**
+data/**
+analyze_bench.py
+.env
+.env.example
