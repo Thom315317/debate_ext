@@ -1676,6 +1676,7 @@ interface ParsedArgs {
     tiebreakerModel: string;
     judgeThreshold: number;
     seed: number;
+    dryRun: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -1693,6 +1694,7 @@ function parseArgs(): ParsedArgs {
     let tiebreakerModel = 'gemini-2.5-pro';
     let judgeThreshold = 0.2;
     let seed = 42;
+    let dryRun = false;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--cases' && args[i + 1]) {
@@ -1721,6 +1723,8 @@ function parseArgs(): ParsedArgs {
             judgeThreshold = parseFloat(args[++i]);
         } else if (args[i] === '--seed' && args[i + 1]) {
             seed = parseInt(args[++i], 10);
+        } else if (args[i] === '--dry-run') {
+            dryRun = true;
         } else if (args[i] === '--help') {
             console.log(`CRISTAL CODE Benchmark — 100 cases, 9 categories, 8 configurations\n`);
             console.log(`Configs: ${ALL_CONFIGS.join(', ')}\n`);
@@ -1738,6 +1742,7 @@ function parseArgs(): ParsedArgs {
             console.log(`  --tiebreaker-model MODEL    Tie-breaker (default: gemini-2.5-pro)`);
             console.log(`  --judge-threshold N         Divergence threshold (default: 0.2)`);
             console.log(`  --seed N                    PRNG seed (default: 42)`);
+            console.log(`  --dry-run                   Simulate run with mock scores, no API calls`);
             console.log(`\nRequires: ANTHROPIC_API_KEY + OPENAI_API_KEY + GEMINI_API_KEY env vars + Ollama.`);
             console.log(`\nCategories: ${ALL_CATEGORIES.join(', ')}`);
             console.log(`\nAll ${ALL_CASES.length} cases:`);
@@ -1754,7 +1759,7 @@ function parseArgs(): ParsedArgs {
     return {
         cases, categories, complexities, configs, maxIter, timeout,
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
-        tiebreakerModel, judgeThreshold, seed,
+        tiebreakerModel, judgeThreshold, seed, dryRun,
     };
 }
 
@@ -1769,7 +1774,7 @@ async function main(): Promise<void> {
         cases: filterCases, categories, complexities, configs,
         maxIter, timeout, gen1Model, gen2Model,
         claudeJudgeModel, openaiJudgeModel, tiebreakerModel,
-        judgeThreshold, seed,
+        judgeThreshold, seed, dryRun,
     } = opts;
     const cwd = process.cwd();
 
@@ -1781,6 +1786,9 @@ async function main(): Promise<void> {
     console.log('║     CRISTAL CODE — Benchmark Suite (8 configs × 100 cases)          ║');
     console.log('║     Solos · Lead/Consult · Orch/Code · Self-Refine                  ║');
     console.log('║     Mid-tier generators + Frontier judges                           ║');
+    if (dryRun) {
+    console.log('║     ⚡ DRY-RUN MODE — mock scores, no API calls                     ║');
+    }
     console.log('╚══════════════════════════════════════════════════════════════════════╝\n');
 
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
@@ -1797,10 +1805,13 @@ async function main(): Promise<void> {
     console.log(`  Max iters   : ${maxIter}`);
     console.log(`  Threshold   : ${judgeThreshold}`);
     console.log(`  Timeout     : ${timeout}ms (${(timeout / 1000).toFixed(0)}s)`);
+    if (dryRun) { console.log(`  Mode        : DRY-RUN (mock scores via PRNG, zero API calls)`); }
     console.log(`  CWD         : ${cwd}\n`);
 
-    if (!hasAnthropic) { console.error('ERROR: Set ANTHROPIC_API_KEY environment variable.'); process.exit(1); }
-    if (!hasOpenAI) { console.error('ERROR: Set OPENAI_API_KEY environment variable.'); process.exit(1); }
+    if (!dryRun) {
+        if (!hasAnthropic) { console.error('ERROR: Set ANTHROPIC_API_KEY environment variable.'); process.exit(1); }
+        if (!hasOpenAI) { console.error('ERROR: Set OPENAI_API_KEY environment variable.'); process.exit(1); }
+    }
 
     // Apply filters
     let selectedCases = ALL_CASES;
@@ -1841,52 +1852,106 @@ async function main(): Promise<void> {
 
         const caseConfigs: ConfigResult[] = [];
 
-        // Run each selected config
-        for (const cfg of configs) {
-            process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} ... `);
-            const result = await runBenchConfig(cfg, tc.prompt, maxIter, timeout, genModels);
-            caseConfigs.push(result);
-            console.log(formatResult(result));
-        }
-
-        // Quality evaluation — blind (3 judges, randomize order)
-        let quality: Partial<Record<BenchConfig, QualityScores>> | undefined;
-        let judgeDetails: JudgeDetail[] | undefined;
-        const withOutput = caseConfigs.filter(c => c.output.length > 0);
-
-        if (withOutput.length > 0) {
-            process.stdout.write('  Quality ... ');
-            const evalResult = await evaluateQuality(
-                tc.prompt,
-                withOutput.map(c => ({ config: c.config, output: c.output })),
-                timeout,
-                judgeModels,
-                tiebreakerModel,
-                judgeThreshold,
-            );
-
-            if (evalResult) {
-                quality = evalResult.averaged;
-                judgeDetails = evalResult.details;
-                // Print averaged scores
-                const scores = configs
-                    .filter(c => quality![c])
-                    .map(c => `${CONFIG_SHORT[c]}=${quality![c]!.total}/10`);
-                console.log(scores.join('  '));
-            } else {
-                console.log('SKIPPED (eval failed)');
+        if (dryRun) {
+            // ─── DRY-RUN: mock scores via PRNG, zero API calls ───
+            for (const cfg of configs) {
+                const mockDuration = Math.round(_rng() * 3000 + 500);
+                const mockChars = Math.round(_rng() * 2000 + 200);
+                caseConfigs.push({
+                    config: cfg, output: `/* mock ${cfg} */`,
+                    outputChars: mockChars, outputLines: Math.round(mockChars / 40),
+                    duration: mockDuration, iterations: 1, consensusReached: false,
+                });
+                console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} ... ${mockDuration}ms, ${mockChars} chars (mock)`);
             }
-        }
 
-        results.push({
-            caseName: tc.name,
-            category: tc.category,
-            complexity: tc.complexity,
-            timestamp: new Date().toISOString(),
-            configs: caseConfigs,
-            quality,
-            judgeDetails,
-        });
+            // Mock quality scores (4-9 range) + escalation simulation
+            const quality: Partial<Record<BenchConfig, QualityScores>> = {};
+            const judgeDetails: JudgeDetail[] = [];
+
+            for (const cfg of configs) {
+                const mockScore = (j: string) => {
+                    const base = Math.round(_rng() * 5 + 4); // 4-9
+                    return { correctness: base, completeness: base, edgeCases: base,
+                        codeQuality: base, readability: base, total: base, justification: `mock (${j})` };
+                };
+
+                const s1 = mockScore('claude');
+                const s2 = mockScore('openai');
+                const delta = Math.abs(s1.total - s2.total) / 10;
+                const diverged = delta > judgeThreshold;
+
+                if (diverged) {
+                    // Simulate round 2 (debate re-score)
+                    const s1b = mockScore('claude-r2');
+                    const s2b = mockScore('openai-r2');
+                    const delta2 = Math.abs(s1b.total - s2b.total) / 10;
+
+                    if (delta2 > judgeThreshold) {
+                        // Tie-breaker would fire
+                        const sTb = mockScore('gemini-tb');
+                        quality[cfg] = sTb;
+                        console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} Judge: ${s1.total}/${s2.total} → DEBATE → ${s1b.total}/${s2b.total} → TIE-BREAKER → ${sTb.total}/10`);
+                    } else {
+                        const avg = parseFloat(((s1b.total + s2b.total) / 2).toFixed(1));
+                        quality[cfg] = { ...s1b, total: avg };
+                        console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} Judge: ${s1.total}/${s2.total} → DEBATE → ${s1b.total}/${s2b.total} → avg=${avg}/10`);
+                    }
+                } else {
+                    const avg = parseFloat(((s1.total + s2.total) / 2).toFixed(1));
+                    quality[cfg] = { ...s1, total: avg };
+                    console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} Judge: ${s1.total}/${s2.total} → avg=${avg}/10`);
+                }
+            }
+
+            results.push({
+                caseName: tc.name, category: tc.category, complexity: tc.complexity,
+                timestamp: new Date().toISOString(), configs: caseConfigs, quality,
+                judgeDetails,
+            });
+        } else {
+            // ─── REAL RUN: call APIs ─────────────────────────────
+            for (const cfg of configs) {
+                process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} ... `);
+                const result = await runBenchConfig(cfg, tc.prompt, maxIter, timeout, genModels);
+                caseConfigs.push(result);
+                console.log(formatResult(result));
+            }
+
+            // Quality evaluation — blind (2 judges + escalation)
+            let quality: Partial<Record<BenchConfig, QualityScores>> | undefined;
+            let judgeDetails: JudgeDetail[] | undefined;
+            const withOutput = caseConfigs.filter(c => c.output.length > 0);
+
+            if (withOutput.length > 0) {
+                process.stdout.write('  Quality ... ');
+                const evalResult = await evaluateQuality(
+                    tc.prompt,
+                    withOutput.map(c => ({ config: c.config, output: c.output })),
+                    timeout,
+                    judgeModels,
+                    tiebreakerModel,
+                    judgeThreshold,
+                );
+
+                if (evalResult) {
+                    quality = evalResult.averaged;
+                    judgeDetails = evalResult.details;
+                    const scores = configs
+                        .filter(c => quality![c])
+                        .map(c => `${CONFIG_SHORT[c]}=${quality![c]!.total}/10`);
+                    console.log(scores.join('  '));
+                } else {
+                    console.log('SKIPPED (eval failed)');
+                }
+            }
+
+            results.push({
+                caseName: tc.name, category: tc.category, complexity: tc.complexity,
+                timestamp: new Date().toISOString(), configs: caseConfigs, quality,
+                judgeDetails,
+            });
+        }
 
         console.log('─'.repeat(70));
     }
@@ -1938,7 +2003,7 @@ async function main(): Promise<void> {
 
     if (withQuality.length > 0) {
         console.log('\n╔══════════════════════════════════════════════════════════════════════════════════╗');
-        console.log('║                   QUALITY (3 judges: Claude + GPT + DeepSeek)                     ║');
+        console.log('║                   QUALITY (2 judges + Gemini tie-breaker)                          ║');
         console.log('╚══════════════════════════════════════════════════════════════════════════════════╝\n');
 
         let qHdr = pad('Case', 22);
