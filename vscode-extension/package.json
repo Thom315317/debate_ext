@@ -1,7 +1,7 @@
 {
   "name": "cristal-code",
   "displayName": "CRISTAL CODE",
-  "description": "AI debate orchestrator — Claude Code CLI + OpenAI API collaborate to produce robust code",
+  "description": "AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code",
   "version": "0.2.0",
   "publisher": "JDFRNX54",
   "icon": "media/icon.png",
@@ -65,7 +65,7 @@
       },
       {
         "command": "cristalCode.configureAnthropicKey",
-        "title": "CRISTAL CODE: Configure Anthropic Key (optional)",
+        "title": "CRISTAL CODE: Configure Anthropic Key",
         "icon": "$(key)"
       },
       {
