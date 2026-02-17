@@ -2,20 +2,27 @@
 /**
  * CRISTAL CODE — Benchmark v2 (HumanEval + Execution + Judge Debate)
  *
- * Improvements over v1:
+ * Generators (mid-tier, via Ollama):
+ *   gen1 = Qwen3-Coder 480B    gen2 = MiniMax M2
+ *
+ * Judges (frontier, neutral):
+ *   Claude Sonnet 4.5 + GPT-4.1 (primary)
+ *   Gemini 2.5 Pro (tie-breaker via Google AI)
+ *
+ * Features:
  *   - Uses HumanEval (164 Python problems with unit tests)
  *   - Actually EXECUTES generated code → pass/fail (pass@1)
- *   - 3 independent judges: Claude + GPT + DeepSeek
+ *   - 2 primary judges + tie-breaker on divergence
  *   - Judge debate: when scores diverge >20%, judges discuss + re-score
  *   - 5 runs for statistical variance
  *   - Full audit trail: all rounds, debates, scores logged
  *
  * Usage:
- *   npm run bench2                                   # all 164 problems, 6 configs, 5 runs
+ *   npm run bench2                                   # all 164 problems, 8 configs, 5 runs
  *   npm run bench2 -- --runs 1 --limit 10            # quick test: 10 problems, 1 run
- *   npm run bench2 -- --configs claude-solo,openai-solo --limit 20
+ *   npm run bench2 -- --configs gen1-solo,gen2-solo --limit 20
  *
- * Requires: ANTHROPIC_API_KEY + OPENAI_API_KEY env vars + Ollama running locally.
+ * Requires: ANTHROPIC_API_KEY + OPENAI_API_KEY + GEMINI_API_KEY env vars + Ollama.
  */
 
 import * as fs from 'fs';
@@ -27,22 +34,25 @@ import { spawn } from 'child_process';
 // ─── Types ───────────────────────────────────────────────────────────
 
 type BenchConfig =
-    | 'claude-solo' | 'openai-solo'
-    | 'claude-lead' | 'openai-lead'
-    | 'claude-orch' | 'openai-orch';
+    | 'gen1-solo' | 'gen2-solo'
+    | 'gen1-lead' | 'gen2-lead'
+    | 'gen1-orch' | 'gen2-orch'
+    | 'gen1-selfrefine' | 'gen2-selfrefine';
 
-type Agent = 'claude' | 'openai';
+type Agent = 'gen1' | 'gen2';
 
 const ALL_CONFIGS: BenchConfig[] = [
-    'claude-solo', 'openai-solo',
-    'claude-lead', 'openai-lead',
-    'claude-orch', 'openai-orch',
+    'gen1-solo', 'gen2-solo',
+    'gen1-lead', 'gen2-lead',
+    'gen1-orch', 'gen2-orch',
+    'gen1-selfrefine', 'gen2-selfrefine',
 ];
 
 const CONFIG_SHORT: Record<BenchConfig, string> = {
-    'claude-solo': 'Cl.Solo', 'openai-solo': 'OA.Solo',
-    'claude-lead': 'Cl.Lead', 'openai-lead': 'OA.Lead',
-    'claude-orch': 'Cl.Orch', 'openai-orch': 'OA.Orch',
+    'gen1-solo': 'QC.Solo', 'gen2-solo': 'MM.Solo',
+    'gen1-lead': 'QC.Lead', 'gen2-lead': 'MM.Lead',
+    'gen1-orch': 'QC.Orch', 'gen2-orch': 'MM.Orch',
+    'gen1-selfrefine': 'QC.SRef', 'gen2-selfrefine': 'MM.SRef',
 };
 
 interface HumanEvalTask {
@@ -103,9 +113,12 @@ interface TaskResult {
 interface BenchV2Report {
     meta: {
         date: string;
-        claudeModel: string;
-        openaiModel: string;
-        ollamaModel: string;
+        gen1Model: string;
+        gen2Model: string;
+        claudeJudgeModel: string;
+        openaiJudgeModel: string;
+        tiebreakerModel: string;
+        seed: number;
         totalTasks: number;
         selectedTasks: number;
         configs: BenchConfig[];
@@ -230,13 +243,52 @@ function callOllama(
     });
 }
 
+// ─── Gemini API (tie-breaker, requires GEMINI_API_KEY) ──────────────
+
+function callGemini(
+    prompt: string, timeoutMs: number, model: string
+): Promise<{ content: string; error?: string }> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return Promise.resolve({ content: '', error: 'GEMINI_API_KEY not set' });
+    return new Promise((resolve) => {
+        const body = JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.2 },
+        });
+        const req = https.request({
+            hostname: 'generativelanguage.googleapis.com',
+            path: `/v1beta/models/${model}:generateContent?key=${apiKey}`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        }, (res) => {
+            let data = '';
+            res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.error) resolve({ content: '', error: json.error.message || JSON.stringify(json.error) });
+                    else {
+                        const content = json.candidates?.[0]?.content?.parts
+                            ?.map((p: { text?: string }) => p.text ?? '').join('') ?? '';
+                        resolve({ content });
+                    }
+                } catch { resolve({ content: '', error: `Invalid JSON: ${data.slice(0, 200)}` }); }
+            });
+        });
+        req.on('error', (err) => resolve({ content: '', error: String(err) }));
+        const timer = setTimeout(() => { req.destroy(); resolve({ content: '', error: `Timeout ${timeoutMs}ms` }); }, timeoutMs);
+        req.on('close', () => clearTimeout(timer));
+        req.write(body); req.end();
+    });
+}
+
 function callAgent(
     agent: Agent, prompt: string, timeout: number,
-    models: { claude: string; openai: string }
+    models: { gen1: string; gen2: string }
 ): Promise<{ content: string; error?: string }> {
-    return agent === 'claude'
-        ? callClaude(prompt, timeout, models.claude)
-        : callOpenAI(prompt, timeout, models.openai);
+    return agent === 'gen1'
+        ? callOllama(prompt, timeout, models.gen1)
+        : callOllama(prompt, timeout, models.gen2);
 }
 
 // ─── Load HumanEval ──────────────────────────────────────────────────
@@ -358,7 +410,7 @@ const CODE_PROMPT_PREFIX = `Complete the following Python function. Output ONLY 
 
 async function generateSolo(
     agent: Agent, task: HumanEvalTask, timeout: number,
-    models: { claude: string; openai: string }
+    models: { gen1: string; gen2: string }
 ): Promise<{ code: string; duration: number; error?: string }> {
     const start = Date.now();
     const r = await callAgent(agent, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
@@ -367,9 +419,9 @@ async function generateSolo(
 
 async function generateLeadConsult(
     leader: Agent, task: HumanEvalTask, maxIter: number, timeout: number,
-    models: { claude: string; openai: string }
+    models: { gen1: string; gen2: string }
 ): Promise<{ code: string; duration: number; iterations: number; error?: string }> {
-    const consultant: Agent = leader === 'claude' ? 'openai' : 'claude';
+    const consultant: Agent = leader === 'gen1' ? 'gen2' : 'gen1';
     const start = Date.now();
 
     const gen = await callAgent(leader, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
@@ -392,9 +444,9 @@ async function generateLeadConsult(
 
 async function generateOrchCode(
     orchestrator: Agent, task: HumanEvalTask, maxIter: number, timeout: number,
-    models: { claude: string; openai: string }
+    models: { gen1: string; gen2: string }
 ): Promise<{ code: string; duration: number; iterations: number; error?: string }> {
-    const coder: Agent = orchestrator === 'claude' ? 'openai' : 'claude';
+    const coder: Agent = orchestrator === 'gen1' ? 'gen2' : 'gen1';
     const start = Date.now();
 
     const planPrompt = `You are a technical architect. For the following Python function, produce a detailed implementation plan: algorithm choice, edge cases to handle, time complexity.\n\n${task.prompt}`;
@@ -420,17 +472,40 @@ async function generateOrchCode(
     return { code, duration: Date.now() - start, iterations: maxIter };
 }
 
+async function generateSelfRefine(
+    agent: Agent, task: HumanEvalTask, maxIter: number, timeout: number,
+    models: { gen1: string; gen2: string }
+): Promise<{ code: string; duration: number; iterations: number; error?: string }> {
+    const start = Date.now();
+    const gen = await callAgent(agent, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
+    if (gen.error) return { code: '', duration: Date.now() - start, iterations: 1, error: gen.error };
+    let code = extractPythonCode(gen.content, task.prompt);
+
+    for (let i = 2; i <= maxIter; i++) {
+        const reviewPrompt = `Review your code for correctness, edge cases, and quality.\nIf you find issues, provide the corrected complete version.\nIf it's correct, respond with CONSENSUS_OK.\n\nFunction signature:\n${task.prompt}\n\nImplementation:\n${code}`;
+        const review = await callAgent(agent, reviewPrompt, timeout, models);
+        if (review.error) break;
+        if (review.content.includes('CONSENSUS_OK')) {
+            return { code, duration: Date.now() - start, iterations: i };
+        }
+        code = extractPythonCode(review.content, task.prompt);
+    }
+    return { code, duration: Date.now() - start, iterations: maxIter };
+}
+
 async function generateForConfig(
     config: BenchConfig, task: HumanEvalTask, maxIter: number, timeout: number,
-    models: { claude: string; openai: string }
+    models: { gen1: string; gen2: string }
 ): Promise<{ code: string; duration: number; error?: string }> {
     switch (config) {
-        case 'claude-solo': return generateSolo('claude', task, timeout, models);
-        case 'openai-solo': return generateSolo('openai', task, timeout, models);
-        case 'claude-lead': return generateLeadConsult('claude', task, maxIter, timeout, models);
-        case 'openai-lead': return generateLeadConsult('openai', task, maxIter, timeout, models);
-        case 'claude-orch': return generateOrchCode('claude', task, maxIter, timeout, models);
-        case 'openai-orch': return generateOrchCode('openai', task, maxIter, timeout, models);
+        case 'gen1-solo': return generateSolo('gen1', task, timeout, models);
+        case 'gen2-solo': return generateSolo('gen2', task, timeout, models);
+        case 'gen1-lead': return generateLeadConsult('gen1', task, maxIter, timeout, models);
+        case 'gen2-lead': return generateLeadConsult('gen2', task, maxIter, timeout, models);
+        case 'gen1-orch': return generateOrchCode('gen1', task, maxIter, timeout, models);
+        case 'gen2-orch': return generateOrchCode('gen2', task, maxIter, timeout, models);
+        case 'gen1-selfrefine': return generateSelfRefine('gen1', task, maxIter, timeout, models);
+        case 'gen2-selfrefine': return generateSelfRefine('gen2', task, maxIter, timeout, models);
     }
 }
 
@@ -581,10 +656,10 @@ async function evaluateWithDebate(
     taskPrompt: string,
     outputs: { config: BenchConfig; code: string; passed: boolean }[],
     timeout: number,
-    models: { claude: string; openai: string; ollama: string },
+    judgeModels: { claude: string; openai: string },
 ): Promise<JudgeAudit> {
     const valid = outputs.filter(o => o.code.length > 0);
-    const labels = 'ABCDEF'.split('').slice(0, valid.length);
+    const labels = 'ABCDEFGH'.split('').slice(0, valid.length);
     const shuffled = shuffle(valid);
     const labelMap = new Map<string, BenchConfig>();
     const configToLabel = new Map<BenchConfig, string>();
@@ -598,10 +673,10 @@ async function evaluateWithDebate(
         shuffled.map((s, i) => ({ label: labels[i], code: s.code, passed: s.passed }))
     );
 
+    // 2 primary judges (frontier, neutral — never generate)
     const judges: JudgeCaller[] = [
-        { name: 'Claude', call: (p, t) => callClaude(p, t, models.claude) },
-        { name: 'GPT', call: (p, t) => callOpenAI(p, t, models.openai) },
-        { name: 'DeepSeek', call: (p, t) => callOllama(p, t, models.ollama) },
+        { name: 'Claude', call: (p, t) => callClaude(p, t, judgeModels.claude) },
+        { name: 'GPT', call: (p, t) => callOpenAI(p, t, judgeModels.openai) },
     ];
 
     // ─── Round 1: independent scoring ───
@@ -732,12 +807,12 @@ function shuffle<T>(arr: readonly T[]): T[] {
 const CHECKPOINT_PATH = path.join(process.cwd(), 'benchmark-results', 'checkpoint_v2.json');
 
 function makeFingerprint(opts: Args, taskCount: number): string {
-    // Simple fingerprint: configs + models + runs + task count
     return JSON.stringify({
         configs: opts.configs.sort(),
-        claudeModel: opts.claudeModel,
-        openaiModel: opts.openaiModel,
-        ollamaModel: opts.ollamaModel,
+        gen1Model: opts.gen1Model,
+        gen2Model: opts.gen2Model,
+        claudeJudgeModel: opts.claudeJudgeModel,
+        openaiJudgeModel: opts.openaiJudgeModel,
         runs: opts.runs,
         taskCount,
     });
@@ -789,9 +864,13 @@ interface Args {
     runs: number;
     maxIter: number;
     timeout: number;
-    claudeModel: string;
-    openaiModel: string;
-    ollamaModel: string;
+    gen1Model: string;
+    gen2Model: string;
+    claudeJudgeModel: string;
+    openaiJudgeModel: string;
+    tiebreakerModel: string;
+    judgeThreshold: number;
+    seed: number;
     tasks: string[];
     resume: boolean;
 }
@@ -803,9 +882,13 @@ function parseArgs(): Args {
     let runs = 5;
     let maxIter = 2;
     let timeout = 300_000;
-    let claudeModel = 'claude-opus-4-6';
-    let openaiModel = 'gpt-5.1';
-    let ollamaModel = 'deepseek-v3.1:671b-cloud';
+    let gen1Model = 'qwen3-coder:480b-cloud';
+    let gen2Model = 'minimax-m2:cloud';
+    let claudeJudgeModel = 'claude-sonnet-4-5-20250929';
+    let openaiJudgeModel = 'gpt-4.1';
+    let tiebreakerModel = 'gemini-2.5-pro';
+    let judgeThreshold = 0.2;
+    let seed = 42;
     let tasks: string[] = [];
     let resume = false;
 
@@ -815,35 +898,48 @@ function parseArgs(): Args {
         else if (args[i] === '--runs' && args[i + 1]) runs = parseInt(args[++i], 10);
         else if (args[i] === '--max-iter' && args[i + 1]) maxIter = parseInt(args[++i], 10);
         else if (args[i] === '--timeout' && args[i + 1]) timeout = parseInt(args[++i], 10);
-        else if (args[i] === '--claude-model' && args[i + 1]) claudeModel = args[++i];
-        else if (args[i] === '--openai-model' && args[i + 1]) openaiModel = args[++i];
-        else if (args[i] === '--ollama-model' && args[i + 1]) ollamaModel = args[++i];
+        else if (args[i] === '--gen1-model' && args[i + 1]) gen1Model = args[++i];
+        else if (args[i] === '--gen2-model' && args[i + 1]) gen2Model = args[++i];
+        else if (args[i] === '--claude-judge-model' && args[i + 1]) claudeJudgeModel = args[++i];
+        else if (args[i] === '--openai-judge-model' && args[i + 1]) openaiJudgeModel = args[++i];
+        else if (args[i] === '--tiebreaker-model' && args[i + 1]) tiebreakerModel = args[++i];
+        else if (args[i] === '--judge-threshold' && args[i + 1]) judgeThreshold = parseFloat(args[++i]);
+        else if (args[i] === '--seed' && args[i + 1]) seed = parseInt(args[++i], 10);
         else if (args[i] === '--tasks' && args[i + 1]) tasks = args[++i].split(',');
         else if (args[i] === '--resume') resume = true;
         else if (args[i] === '--help') {
             console.log(`CRISTAL CODE Benchmark v2 — HumanEval + Execution + Judge Debate\n`);
             console.log(`Options:`);
-            console.log(`  --configs c1,c2           Select configs (default: all 6)`);
-            console.log(`  --limit N                 Max tasks to run (default: 164 = all)`);
-            console.log(`  --runs N                  Number of runs (default: 5)`);
-            console.log(`  --tasks HumanEval/0,...    Specific task IDs`);
-            console.log(`  --max-iter N              Max debate iterations (default: 2)`);
-            console.log(`  --timeout N               Timeout per call in ms (default: 300000)`);
-            console.log(`  --claude-model MODEL      (default: claude-opus-4-6)`);
-            console.log(`  --openai-model MODEL      (default: gpt-5.1)`);
-            console.log(`  --ollama-model MODEL      (default: deepseek-v3.1:671b-cloud)`);
-            console.log(`  --resume                  Resume from last checkpoint if available`);
+            console.log(`  --configs c1,c2             Select configs (default: all 8)`);
+            console.log(`  --limit N                   Max tasks to run (default: 164 = all)`);
+            console.log(`  --runs N                    Number of runs (default: 5)`);
+            console.log(`  --tasks HumanEval/0,...      Specific task IDs`);
+            console.log(`  --max-iter N                Max debate iterations (default: 2)`);
+            console.log(`  --timeout N                 Timeout per call in ms (default: 300000)`);
+            console.log(`  --gen1-model MODEL          Gen1 model (default: qwen3-coder:480b-cloud)`);
+            console.log(`  --gen2-model MODEL          Gen2 model (default: minimax-m2:cloud)`);
+            console.log(`  --claude-judge-model MODEL  Claude judge (default: claude-sonnet-4-5-20250929)`);
+            console.log(`  --openai-judge-model MODEL  GPT judge (default: gpt-4.1)`);
+            console.log(`  --tiebreaker-model MODEL    Tie-breaker (default: gemini-2.5-pro)`);
+            console.log(`  --judge-threshold N         Divergence threshold (default: 0.2)`);
+            console.log(`  --seed N                    PRNG seed (default: 42)`);
+            console.log(`  --resume                    Resume from last checkpoint`);
             process.exit(0);
         }
     }
 
     if (configs.length === 0) configs = [...ALL_CONFIGS];
-    return { configs, limit, runs, maxIter, timeout, claudeModel, openaiModel, ollamaModel, tasks, resume };
+    return {
+        configs, limit, runs, maxIter, timeout,
+        gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
+        tiebreakerModel, judgeThreshold, seed, tasks, resume,
+    };
 }
 
 async function main(): Promise<void> {
     const opts = parseArgs();
-    const models = { claude: opts.claudeModel, openai: opts.openaiModel, ollama: opts.ollamaModel };
+    const genModels = { gen1: opts.gen1Model, gen2: opts.gen2Model };
+    const judgeModels = { claude: opts.claudeJudgeModel, openai: opts.openaiJudgeModel };
 
     // Load HumanEval
     const dataPath = path.join(__dirname, '..', 'data', 'HumanEval.jsonl');
@@ -861,20 +957,24 @@ async function main(): Promise<void> {
 
     console.log('╔══════════════════════════════════════════════════════════════════════╗');
     console.log('║  CRISTAL CODE — Benchmark v2                                        ║');
-    console.log('║  HumanEval + Code Execution + 3-Judge Debate                        ║');
+    console.log('║  HumanEval + Code Execution + 2-Judge Debate + Tie-breaker          ║');
     console.log('╚══════════════════════════════════════════════════════════════════════╝\n');
 
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
     const hasOpenAI = !!process.env.OPENAI_API_KEY;
+    const hasGemini = !!process.env.GEMINI_API_KEY;
 
-    console.log(`  Claude      : ${opts.claudeModel} ${hasAnthropic ? '(key set)' : '(MISSING)'}`);
-    console.log(`  OpenAI      : ${opts.openaiModel} ${hasOpenAI ? '(key set)' : '(MISSING)'}`);
-    console.log(`  Ollama judge: ${opts.ollamaModel} (${OLLAMA_HOST}:${OLLAMA_PORT})`);
-    console.log(`  Judges      : Claude + GPT + DeepSeek (debate on >20% divergence)`);
+    console.log(`  Generator 1 : ${opts.gen1Model} (Ollama)`);
+    console.log(`  Generator 2 : ${opts.gen2Model} (Ollama)`);
+    console.log(`  Judge 1     : ${opts.claudeJudgeModel} (Anthropic API) ${hasAnthropic ? '✓' : 'MISSING'}`);
+    console.log(`  Judge 2     : ${opts.openaiJudgeModel} (OpenAI API) ${hasOpenAI ? '✓' : 'MISSING'}`);
+    console.log(`  Tie-breaker : ${opts.tiebreakerModel} (Google AI) ${hasGemini ? '✓' : 'MISSING'}`);
+    console.log(`  Seed        : ${opts.seed}`);
     console.log(`  Configs     : ${opts.configs.map(c => CONFIG_SHORT[c]).join(', ')}`);
     console.log(`  Tasks       : ${selectedTasks.length} / ${allTasks.length} HumanEval problems`);
     console.log(`  Runs        : ${opts.runs}`);
     console.log(`  Max iters   : ${opts.maxIter}`);
+    console.log(`  Threshold   : ${opts.judgeThreshold}`);
     console.log(`  Timeout     : ${opts.timeout}ms\n`);
     console.log(`  Total work  : ${selectedTasks.length} × ${opts.configs.length} configs × ${opts.runs} runs = ${selectedTasks.length * opts.configs.length * opts.runs} generations + executions\n`);
 
@@ -926,7 +1026,7 @@ async function main(): Promise<void> {
                 process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} `);
 
                 // Generate code
-                const gen = await generateForConfig(cfg, task, opts.maxIter, opts.timeout, { claude: opts.claudeModel, openai: opts.openaiModel });
+                const gen = await generateForConfig(cfg, task, opts.maxIter, opts.timeout, genModels);
 
                 if (gen.error) {
                     console.log(`ERROR: ${gen.error.slice(0, 50)}`);
@@ -958,7 +1058,7 @@ async function main(): Promise<void> {
                     task.prompt,
                     withCode.map(c => ({ config: c.config, code: c.generatedCode, passed: c.passed })),
                     opts.timeout,
-                    models,
+                    judgeModels,
                 );
 
                 if (judgeAudit.divergenceDetected) debatesTriggered++;
@@ -1028,9 +1128,12 @@ async function main(): Promise<void> {
     const report: BenchV2Report = {
         meta: {
             date: new Date().toISOString(),
-            claudeModel: opts.claudeModel,
-            openaiModel: opts.openaiModel,
-            ollamaModel: opts.ollamaModel,
+            gen1Model: opts.gen1Model,
+            gen2Model: opts.gen2Model,
+            claudeJudgeModel: opts.claudeJudgeModel,
+            openaiJudgeModel: opts.openaiJudgeModel,
+            tiebreakerModel: opts.tiebreakerModel,
+            seed: opts.seed,
             totalTasks: allTasks.length,
             selectedTasks: selectedTasks.length,
             configs: opts.configs,
