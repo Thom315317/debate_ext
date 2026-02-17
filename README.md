@@ -1,125 +1,148 @@
-# Debate Orchestrator
+# CRISTAL CODE
 
-A VS Code extension that orchestrates adaptive debates between **Claude Code** (coder) and **Codex/GPT** (reviewer/QA) to produce robust code changes.
+AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code.
+Includes a benchmark suite that evaluates inter-LLM collaboration quality.
 
 ## Architecture
 
 ```
 debate_ext/
   vscode-extension/    ← VS Code extension (TypeScript)
+    src/               ← Extension source + benchmark suites
+    scripts/           ← smoke.js (CI smoke tests)
+    data/              ← HumanEval.jsonl (benchmark v2)
   tools/               ← Python auxiliary scripts
     .venv/             ← Python virtual environment
     scripts/           ← patch_utils.py, setup_venv.sh
-  scripts/             ← WSL setup & dev scripts
 ```
+
+### Extension (VS Code sidebar)
+
+Claude (Anthropic API) and GPT (OpenAI API) collaborate in a debate loop
+to generate, review, and refine code changes. The extension auto-detects
+task complexity and adapts the debate depth accordingly.
+
+### Benchmark Suite
+
+Two benchmark harnesses compare 8 collaboration configurations:
+
+| Config | Description |
+|--------|-------------|
+| `gen1-solo` | Qwen3-Coder solo |
+| `gen2-solo` | MiniMax M2 solo |
+| `gen1-lead` / `gen2-lead` | One leads, the other consults |
+| `gen1-orch` / `gen2-orch` | One orchestrates, the other codes |
+| `gen1-selfrefine` / `gen2-selfrefine` | Single agent self-reviews |
+
+**Generators** are mid-tier models via Ollama (Qwen3-Coder 480B, MiniMax M2).
+**Judges** are frontier models from distinct providers:
+
+| Role | Model | Provider |
+|------|-------|----------|
+| Judge 1 | Claude Sonnet 4.5 | Anthropic API |
+| Judge 2 | GPT-4.1 | OpenAI API |
+| Tie-breaker | Gemini 2.5 Pro | Google AI API |
+
+Three distinct providers = zero conflict of interest.
+
+#### Judge Escalation
+
+1. **Round 1** — Both judges score independently (correctness, completeness, edge cases, code quality, readability)
+2. **Divergence check** — If scores diverge >20%, judges debate
+3. **Round 2** — Judges see each other's scores + arguments, re-score
+4. **Tie-breaker** — If still divergent, Gemini 2.5 Pro makes the final call
 
 ## Prerequisites
 
-- **WSL** (Ubuntu recommended)
-- **VS Code** with the **Remote - WSL** extension
 - **Node.js** >= 18 and **npm**
-- **Python 3** with `venv` module
-- **Claude CLI** — must be logged in (`claude --version` to verify)
-- **Codex CLI** or **OpenAI CLI** — at least one must be available (`codex --version` or `openai --version`)
+- **Python 3** with `venv` module (for patch utilities)
+- **Ollama** with mid-tier models pulled (for benchmarks)
+
+## Environment Variables
+
+Copy `.env.example` and fill in your keys:
+
+```bash
+cp vscode-extension/.env.example vscode-extension/.env
+```
+
+| Variable | Required for | Description |
+|----------|-------------|-------------|
+| `ANTHROPIC_API_KEY` | Extension + Benchmarks | Anthropic API key (sk-ant-...) |
+| `OPENAI_API_KEY` | Extension + Benchmarks | OpenAI API key (sk-proj-...) |
+| `GEMINI_API_KEY` | Benchmarks (tie-breaker) | Google AI API key (AIza...) |
+| `OLLAMA_HOST` | Benchmarks | Ollama host (default: localhost) |
+| `OLLAMA_PORT` | Benchmarks | Ollama port (default: 11434) |
+| `GEN1_MODEL` | Benchmarks | Generator 1 model name |
+| `GEN2_MODEL` | Benchmarks | Generator 2 model name |
+
+API keys for the extension are stored securely via VS Code SecretStorage
+(configured from the sidebar gear icon).
 
 ## Quick Start
 
-### 1. Setup (run once in WSL)
+### Extension Development
 
 ```bash
-cd /home/thom315/debate_ext
-bash scripts/setup_wsl.sh
+cd vscode-extension
+npm install
+npm run watch    # auto-compile on save
+# Press F5 in VS Code to launch Extension Development Host
 ```
 
-This installs Node.js dependencies, creates the Python venv, and makes scripts executable.
-
-### 2. Open in VS Code (Remote - WSL)
+### Run Benchmarks
 
 ```bash
-code /home/thom315/debate_ext/vscode-extension
+cd vscode-extension
+
+# Benchmark v1 — 100 hand-crafted cases, 9 categories
+npm run benchmark -- --cases algo-fibonacci --configs gen1-solo,gen2-solo
+
+# Benchmark v2 — HumanEval (164 Python problems + execution)
+npm run bench2 -- --limit 10 --runs 1
+
+# Dry-run (mock scores, no API calls, validate pipeline)
+npm run benchmark -- --dry-run
+npm run bench2 -- --dry-run --limit 5
 ```
 
-Or from VS Code: **Remote-WSL: Open Folder** → `/home/thom315/debate_ext/vscode-extension`
+### Smoke Tests
 
-### 3. Launch in development mode
+```bash
+npm run smoke    # checks build artifacts, --help, security patterns
+```
 
-- Open a terminal in VS Code and run:
-  ```bash
-  npm run watch
-  ```
-  Or from WSL:
-  ```bash
-  bash /home/thom315/debate_ext/scripts/run_extension_dev.sh
-  ```
-
-- Press **F5** to open the Extension Development Host.
-
-### 4. Use the extension
-
-Open the Command Palette (`Ctrl+Shift+P`) and search for:
+## VS Code Commands
 
 | Command | Description |
 |---------|-------------|
-| `Debate Orchestrator: Run Debate` | Auto-detect mode (SIMPLE/MOYEN/COMPLEXE) |
-| `Debate Orchestrator: Run Simple` | Force SIMPLE mode (Claude only) |
-| `Debate Orchestrator: Run Complex` | Force COMPLEXE mode (full debate) |
-| `Debate Orchestrator: Show Logs` | Show the output channel with logs |
-| `Debate Orchestrator: Configure CLIs` | Set CLI paths and timeouts |
+| `CRISTAL CODE: Run Debate` | Auto-detect mode and run debate |
+| `CRISTAL CODE: Run Simple` | Force simple mode (single pass) |
+| `CRISTAL CODE: Run Complex` | Force complex mode (full debate) |
+| `CRISTAL CODE: Stop Debate` | Stop the current debate |
+| `CRISTAL CODE: Clear Chat` | Clear chat history |
+| `CRISTAL CODE: Configuration` | Configure models and settings |
+| `CRISTAL CODE: Configure Anthropic Key` | Set Anthropic API key (SecretStorage) |
+| `CRISTAL CODE: Configure OpenAI Key` | Set OpenAI API key (SecretStorage) |
+| `CRISTAL CODE: Show Logs` | Show the output channel |
 
-## Debate Modes
+## Extension Settings
 
-| Mode | Flow | Max Iterations |
-|------|------|----------------|
-| **SIMPLE** | Claude → apply patch | 1 |
-| **MOYEN** | Claude → Codex review → Claude correction | 2 |
-| **COMPLEXE** | Claude → Codex review → Claude correction → Codex validation | 3 |
-
-Mode is auto-detected based on:
-- Prompt length and complexity keywords
-- Number of files involved
-- Whether tests are mentioned
-- Selection size
-
-## Memory System
-
-The extension stores a lightweight memory in `.debate_memory/` in your workspace:
-
-- `decisions.jsonl` — past decisions and constraints
-- `snippets.jsonl` — code snippets cited in debates
-- `runs/` — full logs for each debate run
-
-Relevant memories are retrieved by keyword matching and injected as context.
-
-## CLI Requirements
-
-Both CLIs must be authenticated **before** using the extension. The extension calls them as local processes — it does **not** use API keys directly.
-
-```bash
-# Verify Claude CLI
-claude --version
-
-# Verify Codex CLI (or OpenAI as fallback)
-codex --version
-# or
-openai --version
-```
-
-## Configuration
-
-Settings are under `debateOrchestrator.*` in VS Code:
+Settings are under `cristalCode.*` in VS Code:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `claudePath` | `claude` | Path to Claude CLI |
-| `codexPath` | `codex` | Path to Codex CLI |
-| `openaiPath` | `openai` | Path to OpenAI CLI (fallback) |
-| `claudeTimeout` | `120000` | Claude CLI timeout (ms) |
-| `codexTimeout` | `120000` | Codex/OpenAI CLI timeout (ms) |
-| `testCommand` | *(empty)* | Optional test command between iterations |
-| `pythonPath` | *(empty)* | Python path for auxiliary scripts (auto-detected) |
+| `claudeModel` | `claude-sonnet-4-20250514` | Claude model for the extension |
+| `claudeTimeout` | `300000` | Claude API timeout (ms) |
+| `openaiModel` | `gpt-4o` | OpenAI model for the extension |
+| `openaiTimeout` | `300000` | OpenAI API timeout (ms) |
+| `testCommand` | *(empty)* | Test command between iterations |
+| `pythonPath` | *(empty)* | Python path (auto-detected) |
 
 ## Security
 
-- Zero API keys hardcoded
-- No secrets logged
-- CLIs use their own authentication (login once, use everywhere)
+- Zero API keys in source code — enforced by smoke tests
+- Extension keys stored via VS Code SecretStorage (OS keychain)
+- Benchmark keys via environment variables only
+- `.env` excluded by `.gitignore`
+- Forbidden credential patterns checked on every build

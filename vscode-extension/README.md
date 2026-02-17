@@ -1,18 +1,14 @@
-# Debate Orchestrator — VS Code Extension
+# CRISTAL CODE — VS Code Extension
 
-Adaptive debate orchestration between Claude Code and Codex/GPT for robust code generation.
+AI debate orchestrator: Claude + OpenAI collaborate via API keys to produce robust code.
 
 ## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Watch mode (auto-compile on save)
-npm run watch
-
-# One-time compile
-npm run compile
+npm run watch     # auto-compile on save
+npm run compile   # one-time compile
+npm run smoke     # smoke tests (build + security)
 ```
 
 Press **F5** in VS Code to launch the Extension Development Host.
@@ -21,19 +17,46 @@ Press **F5** in VS Code to launch the Extension Development Host.
 
 | File | Purpose |
 |------|---------|
-| `extension.ts` | Entry point, command registration, CLI checks |
+| `extension.ts` | Entry point, command registration, SecretStorage key management |
 | `orchestrator.ts` | Main debate loop — coordinates all modules |
-| `cliRunner.ts` | Robust CLI execution wrapper (spawn, timeout, detection) |
+| `cliRunner.ts` | API callers (Anthropic, OpenAI) + SecretStorage helpers |
 | `modes.ts` | Mode detection heuristics (SIMPLE/MOYEN/COMPLEXE) |
 | `contextCollector.ts` | Gathers VS Code context + workspace memory |
 | `consensus.ts` | Structured review prompt builder + parser |
 | `patchApplier.ts` | Diff extraction, parsing, preview, WorkspaceEdit apply |
+| `chatPanel.ts` | Webview sidebar panel for chat UI |
 | `logger.ts` | Output channel logging + persistent run logs |
+| `benchmark.ts` | Benchmark v1 — 100 cases, 9 categories, 8 configs |
+| `benchmark_v2.ts` | Benchmark v2 — HumanEval 164 problems + code execution |
 
 ## Commands
 
-- `debateOrchestrator.runDebate` — Auto mode
-- `debateOrchestrator.runSimple` — Force SIMPLE
-- `debateOrchestrator.runComplex` — Force COMPLEXE
-- `debateOrchestrator.showLogs` — Show output channel
-- `debateOrchestrator.configureCLIs` — Interactive CLI configuration
+| ID | Title |
+|----|-------|
+| `cristalCode.runDebate` | CRISTAL CODE: Run Debate (auto) |
+| `cristalCode.runSimple` | CRISTAL CODE: Run Simple |
+| `cristalCode.runComplex` | CRISTAL CODE: Run Complex |
+| `cristalCode.stopDebate` | CRISTAL CODE: Stop Debate |
+| `cristalCode.clearChat` | CRISTAL CODE: Clear Chat |
+| `cristalCode.configureCLIs` | CRISTAL CODE: Configuration |
+| `cristalCode.configureAnthropicKey` | CRISTAL CODE: Configure Anthropic Key |
+| `cristalCode.configureOpenAIKey` | CRISTAL CODE: Configure OpenAI Key |
+| `cristalCode.showLogs` | CRISTAL CODE: Show Logs |
+
+## Benchmark Usage
+
+```bash
+# v1 — 100 hand-crafted cases
+npm run benchmark -- --help
+npm run benchmark -- --dry-run
+npm run benchmark -- --cases algo-fibonacci --configs gen1-solo,gen2-solo
+
+# v2 — HumanEval + execution
+npm run bench2 -- --help
+npm run bench2 -- --dry-run --limit 5
+npm run bench2 -- --limit 10 --runs 1 --configs gen1-solo,gen2-solo
+```
+
+Key flags: `--dry-run`, `--seed N`, `--configs`, `--judge-threshold N`,
+`--gen1-model`, `--gen2-model`, `--claude-judge-model`, `--openai-judge-model`,
+`--tiebreaker-model`.
