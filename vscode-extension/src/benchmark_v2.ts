@@ -918,6 +918,7 @@ interface Args {
     seed: number;
     tasks: string[];
     resume: boolean;
+    dryRun: boolean;
 }
 
 function parseArgs(): Args {
@@ -936,6 +937,7 @@ function parseArgs(): Args {
     let seed = 42;
     let tasks: string[] = [];
     let resume = false;
+    let dryRun = false;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--configs' && args[i + 1]) configs = args[++i].split(',') as BenchConfig[];
@@ -952,6 +954,7 @@ function parseArgs(): Args {
         else if (args[i] === '--seed' && args[i + 1]) seed = parseInt(args[++i], 10);
         else if (args[i] === '--tasks' && args[i + 1]) tasks = args[++i].split(',');
         else if (args[i] === '--resume') resume = true;
+        else if (args[i] === '--dry-run') dryRun = true;
         else if (args[i] === '--help') {
             console.log(`CRISTAL CODE Benchmark v2 — HumanEval + Execution + Judge Debate\n`);
             console.log(`Options:`);
@@ -969,6 +972,7 @@ function parseArgs(): Args {
             console.log(`  --judge-threshold N         Divergence threshold (default: 0.2)`);
             console.log(`  --seed N                    PRNG seed (default: 42)`);
             console.log(`  --resume                    Resume from last checkpoint`);
+            console.log(`  --dry-run                   Simulate run with mock scores, no API calls`);
             process.exit(0);
         }
     }
@@ -977,7 +981,7 @@ function parseArgs(): Args {
     return {
         configs, limit, runs, maxIter, timeout,
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
-        tiebreakerModel, judgeThreshold, seed, tasks, resume,
+        tiebreakerModel, judgeThreshold, seed, tasks, resume, dryRun,
     };
 }
 
@@ -989,13 +993,19 @@ async function main(): Promise<void> {
 
     // Load HumanEval
     const dataPath = path.join(__dirname, '..', 'data', 'HumanEval.jsonl');
-    if (!fs.existsSync(dataPath)) {
+    if (!fs.existsSync(dataPath) && !opts.dryRun) {
         console.error(`ERROR: HumanEval data not found at ${dataPath}`);
         console.error(`Run: curl -sL 'https://raw.githubusercontent.com/openai/human-eval/master/data/HumanEval.jsonl.gz' | gunzip > data/HumanEval.jsonl`);
         process.exit(1);
     }
 
-    let allTasks = loadHumanEval(dataPath);
+    let allTasks: HumanEvalTask[] = fs.existsSync(dataPath) ? loadHumanEval(dataPath) :
+        // Dry-run without data: generate synthetic task stubs
+        Array.from({ length: 20 }, (_, i) => ({
+            task_id: `HumanEval/${i}`, prompt: `def mock_fn_${i}():\n    """Mock task ${i}"""\n`,
+            entry_point: `mock_fn_${i}`, canonical_solution: `    return ${i}`,
+            test: `assert mock_fn_${i}() == ${i}`,
+        }));
     if (opts.tasks.length > 0) {
         allTasks = allTasks.filter(t => opts.tasks.includes(t.task_id));
     }
@@ -1004,6 +1014,9 @@ async function main(): Promise<void> {
     console.log('╔══════════════════════════════════════════════════════════════════════╗');
     console.log('║  CRISTAL CODE — Benchmark v2                                        ║');
     console.log('║  HumanEval + Code Execution + 2-Judge Debate + Tie-breaker          ║');
+    if (opts.dryRun) {
+    console.log('║  ⚡ DRY-RUN MODE — mock scores, no API calls                        ║');
+    }
     console.log('╚══════════════════════════════════════════════════════════════════════╝\n');
 
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
@@ -1022,10 +1035,14 @@ async function main(): Promise<void> {
     console.log(`  Max iters   : ${opts.maxIter}`);
     console.log(`  Threshold   : ${opts.judgeThreshold}`);
     console.log(`  Timeout     : ${opts.timeout}ms\n`);
-    console.log(`  Total work  : ${selectedTasks.length} × ${opts.configs.length} configs × ${opts.runs} runs = ${selectedTasks.length * opts.configs.length * opts.runs} generations + executions\n`);
+    console.log(`  Total work  : ${selectedTasks.length} × ${opts.configs.length} configs × ${opts.runs} runs = ${selectedTasks.length * opts.configs.length * opts.runs} generations + executions`);
+    if (opts.dryRun) { console.log(`  Mode        : DRY-RUN (mock scores via PRNG, zero API calls)`); }
+    console.log('');
 
-    if (!hasAnthropic) { console.error('ERROR: Set ANTHROPIC_API_KEY.'); process.exit(1); }
-    if (!hasOpenAI) { console.error('ERROR: Set OPENAI_API_KEY.'); process.exit(1); }
+    if (!opts.dryRun) {
+        if (!hasAnthropic) { console.error('ERROR: Set ANTHROPIC_API_KEY.'); process.exit(1); }
+        if (!hasOpenAI) { console.error('ERROR: Set OPENAI_API_KEY.'); process.exit(1); }
+    }
 
     // ─── Checkpoint / resume ─────────────────────────────────────
     const fingerprint = makeFingerprint(opts, selectedTasks.length);
@@ -1067,58 +1084,110 @@ async function main(): Promise<void> {
             console.log(`  ${task.prompt.split('\n').find(l => l.trim().startsWith('\"\"\"'))?.trim().slice(0, 70) || ''}...\n`);
 
             const configResults: ConfigRunResult[] = [];
-
-            for (const cfg of opts.configs) {
-                process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} `);
-
-                // Generate code
-                const gen = await generateForConfig(cfg, task, opts.maxIter, opts.timeout, genModels);
-
-                if (gen.error) {
-                    console.log(`ERROR: ${gen.error.slice(0, 50)}`);
-                    configResults.push({
-                        config: cfg, generatedCode: '', passed: false,
-                        execOutput: '', execTimeMs: 0, duration: gen.duration, error: gen.error,
-                    });
-                    continue;
-                }
-
-                // Execute code + tests
-                const exec = await executeCode(task.prompt, gen.code, task.test, task.entry_point);
-
-                console.log(`${gen.duration}ms, ${exec.passed ? 'PASS ✓' : 'FAIL ✗'} (exec: ${exec.timeMs}ms)`);
-
-                configResults.push({
-                    config: cfg, generatedCode: gen.code, passed: exec.passed,
-                    execOutput: exec.output, execTimeMs: exec.timeMs, duration: gen.duration,
-                });
-            }
-
-            // Judge evaluation with debate
-            const withCode = configResults.filter(c => c.generatedCode.length > 0);
             let judgeAudit: JudgeAudit;
 
-            if (withCode.length > 0) {
-                process.stdout.write('  Judges  ');
-                judgeAudit = await evaluateWithDebate(
-                    task.prompt,
-                    withCode.map(c => ({ config: c.config, code: c.generatedCode, passed: c.passed })),
-                    opts.timeout,
-                    judgeModels,
-                    opts.tiebreakerModel,
-                    opts.judgeThreshold,
-                );
+            if (opts.dryRun) {
+                // ─── DRY-RUN: mock scores via PRNG, zero API calls ───
+                for (const cfg of opts.configs) {
+                    const mockDuration = Math.round(_rng() * 3000 + 500);
+                    const mockPassed = _rng() > 0.3; // ~70% pass rate
+                    configResults.push({
+                        config: cfg, generatedCode: `# mock ${cfg}`, passed: mockPassed,
+                        execOutput: mockPassed ? 'OK' : 'AssertionError', execTimeMs: Math.round(_rng() * 500),
+                        duration: mockDuration,
+                    });
+                    console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} ${mockDuration}ms, ${mockPassed ? 'PASS ✓' : 'FAIL ✗'} (mock)`);
+                }
 
-                if (judgeAudit.divergenceDetected) debatesTriggered++;
+                // Mock judge evaluation with escalation simulation
+                const mockScore = (j: string): QualityScores => {
+                    const base = Math.round(_rng() * 5 + 4); // 4-9
+                    return { correctness: base, completeness: base, edgeCases: base,
+                        codeQuality: base, readability: base, total: base, justification: `mock (${j})` };
+                };
 
-                // Print final scores
-                const scores = opts.configs
-                    .filter(c => judgeAudit.finalScores[c])
-                    .map(c => `${CONFIG_SHORT[c]}=${judgeAudit.finalScores[c]!.total}/10`);
-                console.log(scores.join('  ') + (judgeAudit.divergenceDetected ? ' [DEBATED]' : ''));
+                const r1: JudgeRound[] = [
+                    { judge: 'claude', scores: {} }, { judge: 'openai', scores: {} },
+                ];
+                const finalScores: Partial<Record<BenchConfig, QualityScores>> = {};
+                let diverged = false;
+
+                for (const cfg of opts.configs) {
+                    const s1 = mockScore('claude'); const s2 = mockScore('openai');
+                    r1[0].scores[cfg] = s1; r1[1].scores[cfg] = s2;
+                    const delta = Math.abs(s1.total - s2.total) / 10;
+
+                    if (delta > opts.judgeThreshold) {
+                        diverged = true;
+                        const s1b = mockScore('claude-r2'); const s2b = mockScore('openai-r2');
+                        const delta2 = Math.abs(s1b.total - s2b.total) / 10;
+                        if (delta2 > opts.judgeThreshold) {
+                            const sTb = mockScore('gemini-tb');
+                            finalScores[cfg] = sTb;
+                            console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} Judge: ${s1.total}/${s2.total} → DEBATE → ${s1b.total}/${s2b.total} → TIE-BREAKER → ${sTb.total}/10`);
+                        } else {
+                            const avg = parseFloat(((s1b.total + s2b.total) / 2).toFixed(1));
+                            finalScores[cfg] = { ...s1b, total: avg };
+                            console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} Judge: ${s1.total}/${s2.total} → DEBATE → avg=${avg}/10`);
+                        }
+                    } else {
+                        const avg = parseFloat(((s1.total + s2.total) / 2).toFixed(1));
+                        finalScores[cfg] = { ...s1, total: avg };
+                        console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} Judge: ${s1.total}/${s2.total} → avg=${avg}/10`);
+                    }
+                }
+
+                if (diverged) debatesTriggered++;
+                judgeAudit = { round1: r1, divergenceDetected: diverged, finalScores };
             } else {
-                judgeAudit = { round1: [], divergenceDetected: false, finalScores: {} };
-                console.log('  Judges  SKIPPED (no code generated)');
+                // ─── REAL RUN: call APIs ─────────────────────────────
+                for (const cfg of opts.configs) {
+                    process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} `);
+
+                    const gen = await generateForConfig(cfg, task, opts.maxIter, opts.timeout, genModels);
+
+                    if (gen.error) {
+                        console.log(`ERROR: ${gen.error.slice(0, 50)}`);
+                        configResults.push({
+                            config: cfg, generatedCode: '', passed: false,
+                            execOutput: '', execTimeMs: 0, duration: gen.duration, error: gen.error,
+                        });
+                        continue;
+                    }
+
+                    const exec = await executeCode(task.prompt, gen.code, task.test, task.entry_point);
+
+                    console.log(`${gen.duration}ms, ${exec.passed ? 'PASS ✓' : 'FAIL ✗'} (exec: ${exec.timeMs}ms)`);
+
+                    configResults.push({
+                        config: cfg, generatedCode: gen.code, passed: exec.passed,
+                        execOutput: exec.output, execTimeMs: exec.timeMs, duration: gen.duration,
+                    });
+                }
+
+                const withCode = configResults.filter(c => c.generatedCode.length > 0);
+
+                if (withCode.length > 0) {
+                    process.stdout.write('  Judges  ');
+                    judgeAudit = await evaluateWithDebate(
+                        task.prompt,
+                        withCode.map(c => ({ config: c.config, code: c.generatedCode, passed: c.passed })),
+                        opts.timeout,
+                        judgeModels,
+                        opts.tiebreakerModel,
+                        opts.judgeThreshold,
+                    );
+
+                    if (judgeAudit.divergenceDetected) debatesTriggered++;
+
+                    const scores = opts.configs
+                        .filter(c => judgeAudit.finalScores[c])
+                        .map(c => `${CONFIG_SHORT[c]}=${judgeAudit.finalScores[c]!.total}/10`);
+                    console.log(scores.join('  ') + (judgeAudit.divergenceDetected ? ' [DEBATED]' : ''));
+                } else {
+                    judgeAudit = { round1: [], divergenceDetected: false, finalScores: {} };
+                    console.log('  Judges  SKIPPED (no code generated)');
+                }
             }
 
             allResults.push({

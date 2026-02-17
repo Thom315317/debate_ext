@@ -147,7 +147,8 @@
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "benchmark": "npm run compile && node out/benchmark.js",
-    "bench2": "npm run compile && node out/benchmark_v2.js"
+    "bench2": "npm run compile && node out/benchmark_v2.js",
+    "smoke": "npm run compile && node scripts/smoke.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
