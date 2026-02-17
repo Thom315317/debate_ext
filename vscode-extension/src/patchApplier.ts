@@ -23,7 +23,15 @@ export interface ParsedPatch {
  * The output might contain explanations mixed with diff blocks.
  */
 export function extractDiff(output: string): string {
-    const lines = output.split('\n');
+    // Strip markdown fences (```diff ... ``` or ``` ... ```)
+    const fenceRe = /^```(?:diff)?\s*\n([\s\S]*?)^```\s*$/gm;
+    let stripped = output;
+    const fenceMatch = fenceRe.exec(output);
+    if (fenceMatch) {
+        stripped = fenceMatch[1];
+    }
+
+    const lines = stripped.split('\n');
     const diffLines: string[] = [];
     let inDiff = false;
 
@@ -33,10 +41,6 @@ export function extractDiff(output: string): string {
         }
         if (inDiff) {
             diffLines.push(line);
-            // End of diff hunk detection: blank line after diff content
-            if (line.trim() === '' && diffLines.length > 3) {
-                // Keep going, there may be more hunks
-            }
         }
     }
 
@@ -214,7 +218,7 @@ export async function fallbackPythonPatch(
     diff: string,
     extensionRoot: string
 ): Promise<string | null> {
-    const config = vscode.workspace.getConfiguration('debateOrchestrator');
+    const config = vscode.workspace.getConfiguration('cristalCode');
     let pythonPath = config.get<string>('pythonPath', '').trim();
 
     if (!pythonPath) {
