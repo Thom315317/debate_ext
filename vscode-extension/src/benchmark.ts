@@ -1,24 +1,33 @@
 #!/usr/bin/env node
 /**
- * CRISTAL CODE — Benchmark (6 configurations)
+ * CRISTAL CODE — Benchmark (8 configurations)
+ *
+ * Generators (mid-tier, via Ollama):
+ *   gen1 = Qwen3-Coder 480B    gen2 = MiniMax M2
  *
  * Configs:
- *   claude-solo   — Claude alone
- *   openai-solo   — OpenAI alone
- *   claude-lead   — Claude codes, OpenAI consults/reviews
- *   openai-lead   — OpenAI codes, Claude consults/reviews
- *   claude-orch   — Claude plans+reviews, OpenAI implements
- *   openai-orch   — OpenAI plans+reviews, Claude implements
+ *   gen1-solo       — Gen1 alone
+ *   gen2-solo       — Gen2 alone
+ *   gen1-lead       — Gen1 codes, Gen2 consults/reviews
+ *   gen2-lead       — Gen2 codes, Gen1 consults/reviews
+ *   gen1-orch       — Gen1 plans+reviews, Gen2 implements
+ *   gen2-orch       — Gen2 plans+reviews, Gen1 implements
+ *   gen1-selfrefine — Gen1 self-reviews its own output
+ *   gen2-selfrefine — Gen2 self-reviews its own output
+ *
+ * Judges (frontier, neutral):
+ *   Claude Sonnet 4.5 + GPT-4.1 (primary)
+ *   DeepSeek-v3.1:671b (tie-breaker via Ollama)
  *
  * Usage:
- *   npm run benchmark                                          # all 100 cases, 6 configs
- *   node out/benchmark.js --configs claude-solo,openai-solo    # only solos
+ *   npm run benchmark                                          # all 100 cases, 8 configs
+ *   node out/benchmark.js --configs gen1-solo,gen2-solo        # only solos
  *   node out/benchmark.js --category algorithms                # one category
  *   node out/benchmark.js --cases algo-fibonacci,algo-bfs      # specific cases
  *   node out/benchmark.js --complexity simple                  # filter by difficulty
  *   node out/benchmark.js --max-iter 3 --timeout 300000
  *
- * Requires: ANTHROPIC_API_KEY + OPENAI_API_KEY environment variables.
+ * Requires: ANTHROPIC_API_KEY + OPENAI_API_KEY env vars + Ollama running.
  * No VS Code dependency — runs as a standalone Node.js script.
  */
 
@@ -41,29 +50,34 @@ type Category =
     | 'security';
 
 type BenchConfig =
-    | 'claude-solo'     // Claude alone
-    | 'openai-solo'     // OpenAI alone
-    | 'claude-lead'     // Claude codes, OpenAI reviews/consults
-    | 'openai-lead'     // OpenAI codes, Claude reviews/consults
-    | 'claude-orch'     // Claude plans+reviews, OpenAI implements
-    | 'openai-orch';    // OpenAI plans+reviews, Claude implements
+    | 'gen1-solo'       // Gen1 alone
+    | 'gen2-solo'       // Gen2 alone
+    | 'gen1-lead'       // Gen1 codes, Gen2 consults/reviews
+    | 'gen2-lead'       // Gen2 codes, Gen1 consults/reviews
+    | 'gen1-orch'       // Gen1 plans+reviews, Gen2 implements
+    | 'gen2-orch'       // Gen2 plans+reviews, Gen1 implements
+    | 'gen1-selfrefine' // Gen1 self-reviews its own output
+    | 'gen2-selfrefine'; // Gen2 self-reviews its own output
 
 const ALL_CONFIGS: BenchConfig[] = [
-    'claude-solo', 'openai-solo',
-    'claude-lead', 'openai-lead',
-    'claude-orch', 'openai-orch',
+    'gen1-solo', 'gen2-solo',
+    'gen1-lead', 'gen2-lead',
+    'gen1-orch', 'gen2-orch',
+    'gen1-selfrefine', 'gen2-selfrefine',
 ];
 
 const CONFIG_SHORT: Record<BenchConfig, string> = {
-    'claude-solo': 'Cl.Solo',
-    'openai-solo': 'OA.Solo',
-    'claude-lead': 'Cl.Lead',
-    'openai-lead': 'OA.Lead',
-    'claude-orch': 'Cl.Orch',
-    'openai-orch': 'OA.Orch',
+    'gen1-solo': 'QC.Solo',
+    'gen2-solo': 'MM.Solo',
+    'gen1-lead': 'QC.Lead',
+    'gen2-lead': 'MM.Lead',
+    'gen1-orch': 'QC.Orch',
+    'gen2-orch': 'MM.Orch',
+    'gen1-selfrefine': 'QC.SRef',
+    'gen2-selfrefine': 'MM.SRef',
 };
 
-type Agent = 'claude' | 'openai';
+type Agent = 'gen1' | 'gen2';
 
 interface BenchmarkCase {
     name: string;
@@ -123,8 +137,12 @@ interface BenchmarkReport {
         cwd: string;
         maxIterations: number;
         timeoutMs: number;
-        claudeVersion: string;
-        openaiModel: string;
+        gen1Model: string;
+        gen2Model: string;
+        claudeJudgeModel: string;
+        openaiJudgeModel: string;
+        tiebreakerModel: string;
+        seed: number;
         totalAvailableCases: number;
         selectedCases: number;
         selectedConfigs: BenchConfig[];
@@ -313,6 +331,60 @@ function callOllama(
         const timer = setTimeout(() => {
             req.destroy();
             resolve({ content: '', error: `Ollama timeout after ${timeoutMs}ms` });
+        }, timeoutMs);
+
+        req.on('close', () => clearTimeout(timer));
+        req.write(body);
+        req.end();
+    });
+}
+
+// ─── Gemini API (tie-breaker, requires GEMINI_API_KEY) ──────────────
+
+function callGemini(
+    prompt: string,
+    timeoutMs: number,
+    model: string
+): Promise<{ content: string; error?: string }> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return Promise.resolve({ content: '', error: 'GEMINI_API_KEY not set' });
+    return new Promise((resolve) => {
+        const body = JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.2 },
+        });
+
+        const req = https.request({
+            hostname: 'generativelanguage.googleapis.com',
+            path: `/v1beta/models/${model}:generateContent?key=${apiKey}`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        }, (res) => {
+            let data = '';
+            res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.error) {
+                        resolve({ content: '', error: json.error.message || JSON.stringify(json.error) });
+                    } else {
+                        const content = json.candidates?.[0]?.content?.parts
+                            ?.map((p: { text?: string }) => p.text ?? '').join('') ?? '';
+                        resolve({ content });
+                    }
+                } catch {
+                    resolve({ content: '', error: `Invalid JSON: ${data.slice(0, 200)}` });
+                }
+            });
+        });
+
+        req.on('error', (err) => {
+            resolve({ content: '', error: String(err) });
+        });
+
+        const timer = setTimeout(() => {
+            req.destroy();
+            resolve({ content: '', error: `Gemini API timeout after ${timeoutMs}ms` });
         }, timeoutMs);
 
         req.on('close', () => clearTimeout(timer));
@@ -1080,12 +1152,12 @@ async function callAgent(
     agent: Agent,
     prompt: string,
     timeout: number,
-    models: { claude: string; openai: string }
+    models: { gen1: string; gen2: string }
 ): Promise<{ content: string; error?: string }> {
-    if (agent === 'claude') {
-        return callClaude(prompt, timeout, models.claude);
+    if (agent === 'gen1') {
+        return callOllama(prompt, timeout, models.gen1);
     } else {
-        return callOpenAI(prompt, timeout, models.openai);
+        return callOllama(prompt, timeout, models.gen2);
     }
 }
 
@@ -1096,9 +1168,9 @@ async function benchSolo(
     agent: Agent,
     prompt: string,
     timeout: number,
-    models: { claude: string; openai: string },
+    models: { gen1: string; gen2: string },
 ): Promise<ConfigResult> {
-    const config: BenchConfig = agent === 'claude' ? 'claude-solo' : 'openai-solo';
+    const config: BenchConfig = agent === 'gen1' ? 'gen1-solo' : 'gen2-solo';
     const start = Date.now();
     const r = await callAgent(agent, prompt, timeout, models);
     return {
@@ -1122,10 +1194,10 @@ async function benchLeadConsult(
     prompt: string,
     maxIter: number,
     timeout: number,
-    models: { claude: string; openai: string },
+    models: { gen1: string; gen2: string },
 ): Promise<ConfigResult> {
-    const config: BenchConfig = leader === 'claude' ? 'claude-lead' : 'openai-lead';
-    const consultant: Agent = leader === 'claude' ? 'openai' : 'claude';
+    const config: BenchConfig = leader === 'gen1' ? 'gen1-lead' : 'gen2-lead';
+    const consultant: Agent = leader === 'gen1' ? 'gen2' : 'gen1';
     const start = Date.now();
     let lastOutput = '';
     let iteration = 0;
@@ -1178,10 +1250,10 @@ async function benchOrchCode(
     prompt: string,
     maxIter: number,
     timeout: number,
-    models: { claude: string; openai: string },
+    models: { gen1: string; gen2: string },
 ): Promise<ConfigResult> {
-    const config: BenchConfig = orchestrator === 'claude' ? 'claude-orch' : 'openai-orch';
-    const coder: Agent = orchestrator === 'claude' ? 'openai' : 'claude';
+    const config: BenchConfig = orchestrator === 'gen1' ? 'gen1-orch' : 'gen2-orch';
+    const coder: Agent = orchestrator === 'gen1' ? 'gen2' : 'gen1';
     const start = Date.now();
     let lastOutput = '';
     let iteration = 0;
@@ -1247,21 +1319,67 @@ function makeResult(
     };
 }
 
+/** Self-refine: single agent reviews and corrects its own output */
+async function benchSelfRefine(
+    agent: Agent,
+    prompt: string,
+    maxIter: number,
+    timeout: number,
+    models: { gen1: string; gen2: string },
+): Promise<ConfigResult> {
+    const config: BenchConfig = agent === 'gen1' ? 'gen1-selfrefine' : 'gen2-selfrefine';
+    const start = Date.now();
+    let lastOutput = '';
+
+    try {
+        // Iteration 1: generate
+        const gen = await callAgent(agent, prompt, timeout, models);
+        if (gen.error) return makeResult(config, start, 1, '', gen.error);
+        lastOutput = gen.content;
+
+        // Iterations 2..maxIter: self-review
+        for (let i = 2; i <= maxIter; i++) {
+            const reviewPrompt =
+                `Review your code for correctness, edge cases, and quality.\nIf you find issues, provide the corrected complete version.\nIf it's correct, respond with CONSENSUS_OK.\n\nCode:\n${lastOutput.slice(0, 4000)}`;
+            const review = await callAgent(agent, reviewPrompt, timeout, models);
+            if (review.error) break;
+            if (review.content.includes('CONSENSUS_OK')) {
+                return {
+                    config, duration: Date.now() - start,
+                    outputChars: lastOutput.length, outputLines: countLines(lastOutput),
+                    iterations: i, consensusReached: true, output: lastOutput,
+                };
+            }
+            lastOutput = review.content;
+        }
+
+        return {
+            config, duration: Date.now() - start,
+            outputChars: lastOutput.length, outputLines: countLines(lastOutput),
+            iterations: maxIter, consensusReached: false, output: lastOutput,
+        };
+    } catch (err) {
+        return makeResult(config, start, maxIter, lastOutput, String(err));
+    }
+}
+
 /** Dispatch to the right runner */
 async function runBenchConfig(
     config: BenchConfig,
     prompt: string,
     maxIter: number,
     timeout: number,
-    models: { claude: string; openai: string },
+    models: { gen1: string; gen2: string },
 ): Promise<ConfigResult> {
     switch (config) {
-        case 'claude-solo':  return benchSolo('claude', prompt, timeout, models);
-        case 'openai-solo':  return benchSolo('openai', prompt, timeout, models);
-        case 'claude-lead':  return benchLeadConsult('claude', prompt, maxIter, timeout, models);
-        case 'openai-lead':  return benchLeadConsult('openai', prompt, maxIter, timeout, models);
-        case 'claude-orch':  return benchOrchCode('claude', prompt, maxIter, timeout, models);
-        case 'openai-orch':  return benchOrchCode('openai', prompt, maxIter, timeout, models);
+        case 'gen1-solo':       return benchSolo('gen1', prompt, timeout, models);
+        case 'gen2-solo':       return benchSolo('gen2', prompt, timeout, models);
+        case 'gen1-lead':       return benchLeadConsult('gen1', prompt, maxIter, timeout, models);
+        case 'gen2-lead':       return benchLeadConsult('gen2', prompt, maxIter, timeout, models);
+        case 'gen1-orch':       return benchOrchCode('gen1', prompt, maxIter, timeout, models);
+        case 'gen2-orch':       return benchOrchCode('gen2', prompt, maxIter, timeout, models);
+        case 'gen1-selfrefine': return benchSelfRefine('gen1', prompt, maxIter, timeout, models);
+        case 'gen2-selfrefine': return benchSelfRefine('gen2', prompt, maxIter, timeout, models);
     }
 }
 
@@ -1371,15 +1489,13 @@ async function evaluateQuality(
     prompt: string,
     outputs: { config: BenchConfig; output: string }[],
     timeout: number,
-    claudeModel: string,
-    openaiModel: string,
-    ollamaModel: string,
-): Promise<{ averaged: Partial<Record<BenchConfig, QualityScores>>; details: JudgeDetail[] } | null> {
+    judgeModels: { claude: string; openai: string },
+): Promise<{ averaged: Partial<Record<BenchConfig, QualityScores>>; details: JudgeDetail[]; debateTriggered?: boolean; tiebreakerUsed?: boolean } | null> {
     const valid = outputs.filter(o => o.output.length > 0);
     if (valid.length === 0) return null;
 
     // Assign random labels to prevent position bias
-    const labels = 'ABCDEF'.split('').slice(0, valid.length);
+    const labels = 'ABCDEFGH'.split('').slice(0, valid.length);
     const shuffled = shuffle(valid);
     const labelMap = new Map<string, BenchConfig>();
     for (let i = 0; i < shuffled.length; i++) {
@@ -1388,11 +1504,10 @@ async function evaluateQuality(
 
     const evalPrompt = buildEvalPrompt(prompt, shuffled, labels);
 
-    // 3 judges in parallel
+    // 2 primary judges (frontier, neutral — never generate)
     const judges: JudgeCaller[] = [
-        { name: 'Claude', call: (p, t) => callClaude(p, t, claudeModel) },
-        { name: 'GPT', call: (p, t) => callOpenAI(p, t, openaiModel) },
-        { name: 'DeepSeek', call: (p, t) => callOllama(p, t, ollamaModel) },
+        { name: 'Claude', call: (p, t) => callClaude(p, t, judgeModels.claude) },
+        { name: 'GPT', call: (p, t) => callOpenAI(p, t, judgeModels.openai) },
     ];
 
     const judgeResults = await Promise.all(
@@ -1428,7 +1543,7 @@ async function evaluateQuality(
         allConfigs,
     );
 
-    return { averaged, details };
+    return { averaged, details, debateTriggered: false, tiebreakerUsed: false };
 }
 
 function clamp(n: number): number {
@@ -1444,9 +1559,13 @@ interface ParsedArgs {
     configs: BenchConfig[];
     maxIter: number;
     timeout: number;
-    openaiModel: string;
-    claudeModel: string;
-    ollamaModel: string;
+    gen1Model: string;
+    gen2Model: string;
+    claudeJudgeModel: string;
+    openaiJudgeModel: string;
+    tiebreakerModel: string;
+    judgeThreshold: number;
+    seed: number;
 }
 
 function parseArgs(): ParsedArgs {
@@ -1457,9 +1576,13 @@ function parseArgs(): ParsedArgs {
     let configs: BenchConfig[] = [];
     let maxIter = 2;
     let timeout = 300_000;
-    let openaiModel = 'gpt-5.1';
-    let claudeModel = 'claude-opus-4-6';
-    let ollamaModel = 'deepseek-v3.1:671b-cloud';
+    let gen1Model = 'qwen3-coder:480b-cloud';
+    let gen2Model = 'minimax-m2:cloud';
+    let claudeJudgeModel = 'claude-sonnet-4-5-20250929';
+    let openaiJudgeModel = 'gpt-4.1';
+    let tiebreakerModel = 'gemini-2.5-pro';
+    let judgeThreshold = 0.2;
+    let seed = 42;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--cases' && args[i + 1]) {
@@ -1474,23 +1597,38 @@ function parseArgs(): ParsedArgs {
             maxIter = parseInt(args[++i], 10);
         } else if (args[i] === '--timeout' && args[i + 1]) {
             timeout = parseInt(args[++i], 10);
-        } else if (args[i] === '--model' && args[i + 1]) {
-            openaiModel = args[++i];
-        } else if (args[i] === '--claude-model' && args[i + 1]) {
-            claudeModel = args[++i];
+        } else if (args[i] === '--gen1-model' && args[i + 1]) {
+            gen1Model = args[++i];
+        } else if (args[i] === '--gen2-model' && args[i + 1]) {
+            gen2Model = args[++i];
+        } else if (args[i] === '--claude-judge-model' && args[i + 1]) {
+            claudeJudgeModel = args[++i];
+        } else if (args[i] === '--openai-judge-model' && args[i + 1]) {
+            openaiJudgeModel = args[++i];
+        } else if (args[i] === '--tiebreaker-model' && args[i + 1]) {
+            tiebreakerModel = args[++i];
+        } else if (args[i] === '--judge-threshold' && args[i + 1]) {
+            judgeThreshold = parseFloat(args[++i]);
+        } else if (args[i] === '--seed' && args[i + 1]) {
+            seed = parseInt(args[++i], 10);
         } else if (args[i] === '--help') {
-            console.log(`CRISTAL CODE Benchmark — 100 cases, 9 categories, 6 configurations\n`);
+            console.log(`CRISTAL CODE Benchmark — 100 cases, 9 categories, 8 configurations\n`);
             console.log(`Configs: ${ALL_CONFIGS.join(', ')}\n`);
             console.log(`Options:`);
-            console.log(`  --cases name1,name2       Run specific cases by name`);
-            console.log(`  --category cat1,cat2      Filter by category`);
-            console.log(`  --complexity simple,medium Filter by difficulty`);
-            console.log(`  --configs c1,c2           Select configs (default: all 6)`);
-            console.log(`  --max-iter N              Max debate iterations (default: 2)`);
-            console.log(`  --timeout N               Timeout per call in ms (default: 300000)`);
-            console.log(`  --model MODEL             OpenAI model (default: gpt-5)`);
-            console.log(`  --claude-model MODEL      Claude model (default: claude-opus-4-6)`);
-            console.log(`\nRequires: ANTHROPIC_API_KEY + OPENAI_API_KEY env vars + Ollama running locally.`);
+            console.log(`  --cases name1,name2         Run specific cases by name`);
+            console.log(`  --category cat1,cat2        Filter by category`);
+            console.log(`  --complexity simple,medium   Filter by difficulty`);
+            console.log(`  --configs c1,c2             Select configs (default: all 8)`);
+            console.log(`  --max-iter N                Max debate iterations (default: 2)`);
+            console.log(`  --timeout N                 Timeout per call in ms (default: 300000)`);
+            console.log(`  --gen1-model MODEL          Gen1 model (default: qwen3-coder:480b-cloud)`);
+            console.log(`  --gen2-model MODEL          Gen2 model (default: minimax-m2:cloud)`);
+            console.log(`  --claude-judge-model MODEL  Claude judge (default: claude-sonnet-4-5-20250929)`);
+            console.log(`  --openai-judge-model MODEL  GPT judge (default: gpt-4.1)`);
+            console.log(`  --tiebreaker-model MODEL    Tie-breaker (default: gemini-2.5-pro)`);
+            console.log(`  --judge-threshold N         Divergence threshold (default: 0.2)`);
+            console.log(`  --seed N                    PRNG seed (default: 42)`);
+            console.log(`\nRequires: ANTHROPIC_API_KEY + OPENAI_API_KEY + GEMINI_API_KEY env vars + Ollama.`);
             console.log(`\nCategories: ${ALL_CATEGORIES.join(', ')}`);
             console.log(`\nAll ${ALL_CASES.length} cases:`);
             for (const cat of ALL_CATEGORIES) {
@@ -1503,7 +1641,11 @@ function parseArgs(): ParsedArgs {
 
     if (configs.length === 0) configs = [...ALL_CONFIGS];
 
-    return { cases, categories, complexities, configs, maxIter, timeout, openaiModel, claudeModel, ollamaModel };
+    return {
+        cases, categories, complexities, configs, maxIter, timeout,
+        gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
+        tiebreakerModel, judgeThreshold, seed,
+    };
 }
 
 const ALL_CATEGORIES: Category[] = [
@@ -1512,29 +1654,37 @@ const ALL_CATEGORIES: Category[] = [
 ];
 
 async function main(): Promise<void> {
+    const opts = parseArgs();
     const {
         cases: filterCases, categories, complexities, configs,
-        maxIter, timeout, openaiModel, claudeModel, ollamaModel,
-    } = parseArgs();
+        maxIter, timeout, gen1Model, gen2Model,
+        claudeJudgeModel, openaiJudgeModel, tiebreakerModel,
+        judgeThreshold, seed,
+    } = opts;
     const cwd = process.cwd();
 
+    const genModels = { gen1: gen1Model, gen2: gen2Model };
+    const judgeModels = { claude: claudeJudgeModel, openai: openaiJudgeModel };
+
     console.log('╔══════════════════════════════════════════════════════════════════════╗');
-    console.log('║     CRISTAL CODE — Benchmark Suite (6 configs × 100 cases)          ║');
-    console.log('║     Solos · Lead/Consult · Orchestrator/Coder                       ║');
-    console.log('║     Performance + Blind Quality Evaluation                          ║');
+    console.log('║     CRISTAL CODE — Benchmark Suite (8 configs × 100 cases)          ║');
+    console.log('║     Solos · Lead/Consult · Orch/Code · Self-Refine                  ║');
+    console.log('║     Mid-tier generators + Frontier judges                           ║');
     console.log('╚══════════════════════════════════════════════════════════════════════╝\n');
 
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
     const hasOpenAI = !!process.env.OPENAI_API_KEY;
+    const hasGemini = !!process.env.GEMINI_API_KEY;
 
-    console.log(`  Anthropic   : ${hasAnthropic ? 'API key set' : 'MISSING'}`);
-    console.log(`  Claude model: ${claudeModel}`);
-    console.log(`  OpenAI      : ${hasOpenAI ? 'API key set' : 'MISSING'}`);
-    console.log(`  OpenAI model: ${openaiModel}`);
-    console.log(`  Ollama judge: ${ollamaModel} (${OLLAMA_HOST}:${OLLAMA_PORT})`);
-    console.log(`  Judges      : Claude + GPT + DeepSeek (3-way blind eval)`);
+    console.log(`  Generator 1 : ${gen1Model} (Ollama)`);
+    console.log(`  Generator 2 : ${gen2Model} (Ollama)`);
+    console.log(`  Judge 1     : ${claudeJudgeModel} (Anthropic API) ${hasAnthropic ? '✓' : 'MISSING'}`);
+    console.log(`  Judge 2     : ${openaiJudgeModel} (OpenAI API) ${hasOpenAI ? '✓' : 'MISSING'}`);
+    console.log(`  Tie-breaker : ${tiebreakerModel} (Google AI) ${hasGemini ? '✓' : 'MISSING'}`);
+    console.log(`  Seed        : ${seed}`);
     console.log(`  Configs     : ${configs.map(c => CONFIG_SHORT[c]).join(', ')}`);
     console.log(`  Max iters   : ${maxIter}`);
+    console.log(`  Threshold   : ${judgeThreshold}`);
     console.log(`  Timeout     : ${timeout}ms (${(timeout / 1000).toFixed(0)}s)`);
     console.log(`  CWD         : ${cwd}\n`);
 
@@ -1583,7 +1733,7 @@ async function main(): Promise<void> {
         // Run each selected config
         for (const cfg of configs) {
             process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} ... `);
-            const result = await runBenchConfig(cfg, tc.prompt, maxIter, timeout, { claude: claudeModel, openai: openaiModel });
+            const result = await runBenchConfig(cfg, tc.prompt, maxIter, timeout, genModels);
             caseConfigs.push(result);
             console.log(formatResult(result));
         }
@@ -1599,9 +1749,7 @@ async function main(): Promise<void> {
                 tc.prompt,
                 withOutput.map(c => ({ config: c.config, output: c.output })),
                 timeout,
-                claudeModel,
-                openaiModel,
-                ollamaModel
+                judgeModels,
             );
 
             if (evalResult) {
@@ -1803,7 +1951,8 @@ async function main(): Promise<void> {
     const report: BenchmarkReport = {
         meta: {
             date: new Date().toISOString(), cwd, maxIterations: maxIter,
-            timeoutMs: timeout, claudeVersion: claudeModel, openaiModel,
+            timeoutMs: timeout,
+            gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel, tiebreakerModel, seed,
             totalAvailableCases: ALL_CASES.length, selectedCases: selectedCases.length,
             selectedConfigs: configs,
         },
