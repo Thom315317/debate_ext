@@ -1,0 +1,8 @@
+.env
+.debate_memory/
+tools/.venv/
+**/node_modules/
+**/out/
+benchmark-results/
+*.vsix
+*.zip
