@@ -88,6 +88,7 @@ interface JudgeAudit {
     divergenceDetected: boolean;
     debate?: DebateRound;
     round2?: JudgeRound[];       // re-scores after debate
+    tiebreakerUsed?: boolean;
     finalScores: Partial<Record<BenchConfig, QualityScores>>;
 }
 
@@ -657,6 +658,8 @@ async function evaluateWithDebate(
     outputs: { config: BenchConfig; code: string; passed: boolean }[],
     timeout: number,
     judgeModels: { claude: string; openai: string },
+    tiebreakerModel?: string,
+    judgeThreshold = DIVERGENCE_THRESHOLD,
 ): Promise<JudgeAudit> {
     const valid = outputs.filter(o => o.code.length > 0);
     const labels = 'ABCDEFGH'.split('').slice(0, valid.length);
@@ -761,7 +764,7 @@ async function evaluateWithDebate(
     process.stdout.write(`[R2 ${r2Status}] `);
 
     // Merge: use round2 scores for divergent labels, round1 for the rest
-    const mergedScores = round1Valid.map((r1) => {
+    const mergedScores: Record<string, QualityScores>[] = round1Valid.map((r1) => {
         const r2 = round2Valid.find(r => r.judge === r1.judge);
         const merged: Record<string, QualityScores> = { ...r1.scores };
         if (r2) {
@@ -771,6 +774,36 @@ async function evaluateWithDebate(
         }
         return merged;
     });
+
+    // Check if divergence persists after round 2
+    const stillDivergent: string[] = [];
+    for (const label of divergentLabels) {
+        const totals = mergedScores.filter(s => s[label]).map(s => s[label].total);
+        if (totals.length >= 2) {
+            const median = totals.sort((a, b) => a - b)[Math.floor(totals.length / 2)];
+            if (median > 0 && Math.max(...totals.map(t => Math.abs(t - median) / median)) > judgeThreshold) {
+                stillDivergent.push(label);
+            }
+        }
+    }
+
+    // ─── Tie-breaker: Gemini (only if divergence persists) ───
+    let tiebreakerUsed = false;
+    if (stillDivergent.length > 0 && tiebreakerModel) {
+        const tbLabels = stillDivergent.map(l => `${l}(${CONFIG_SHORT[labelMap.get(l)!]})`);
+        process.stdout.write(`[TIE-BREAK: ${tbLabels.join(',')}] `);
+        tiebreakerUsed = true;
+
+        try {
+            const tbResult = await callGemini(evalPrompt, timeout, tiebreakerModel);
+            if (!tbResult.error) {
+                const tbScores = parseScores(tbResult.content, labels);
+                if (tbScores) {
+                    mergedScores.push(tbScores);
+                }
+            }
+        } catch { /* tie-breaker failure is non-fatal */ }
+    }
 
     const finalAveraged = averageScores(mergedScores, labels);
 
@@ -787,6 +820,7 @@ async function evaluateWithDebate(
             messages: debateMessages,
         },
         round2: round2Audit,
+        tiebreakerUsed,
         finalScores: labelToConfig(finalAveraged),
     };
 }
@@ -1059,6 +1093,8 @@ async function main(): Promise<void> {
                     withCode.map(c => ({ config: c.config, code: c.generatedCode, passed: c.passed })),
                     opts.timeout,
                     judgeModels,
+                    opts.tiebreakerModel,
+                    opts.judgeThreshold,
                 );
 
                 if (judgeAudit.divergenceDetected) debatesTriggered++;
