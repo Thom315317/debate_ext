@@ -298,9 +298,30 @@ function callOllama(prompt: string, timeoutMs: number, model: string): Promise<A
         let fullContent = '';
         let sseBuffer = '';
         let inThink = false;
+        let done = false;
         let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null;
         const DIM = '\x1b[2m';
         const RESET = '\x1b[0m';
+
+        const finish = (result: ApiResult) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            if (inThink) process.stdout.write(RESET);
+            if (fullContent.length > 0) process.stdout.write('\n');
+            resolve(result);
+        };
+
+        const buildTokens = (): TokenUsage => {
+            const estPrompt = Math.ceil(prompt.length / 4);
+            const estCompletion = Math.ceil(fullContent.length / 4);
+            return {
+                provider: 'ollama',
+                promptTokens: usage?.prompt_tokens ?? estPrompt,
+                completionTokens: usage?.completion_tokens ?? estCompletion,
+                totalTokens: (usage?.prompt_tokens ?? estPrompt) + (usage?.completion_tokens ?? estCompletion),
+            };
+        };
 
         const req = http.request({
             hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: '/v1/chat/completions', method: 'POST',
@@ -309,12 +330,11 @@ function callOllama(prompt: string, timeoutMs: number, model: string): Promise<A
             if (res.statusCode !== 200) {
                 let errData = '';
                 res.on('data', (chunk: Buffer) => { errData += chunk.toString(); });
-                res.on('end', () => {
-                    resolve({ content: '', error: `HTTP ${res.statusCode}: ${errData.slice(0, 200)}` });
-                });
+                res.on('end', () => finish({ content: '', error: `HTTP ${res.statusCode}: ${errData.slice(0, 200)}` }));
                 return;
             }
             res.on('data', (chunk: Buffer) => {
+                if (done) return;
                 sseBuffer += chunk.toString();
                 const lines = sseBuffer.split('\n');
                 sseBuffer = lines.pop() ?? '';
@@ -322,14 +342,19 @@ function callOllama(prompt: string, timeoutMs: number, model: string): Promise<A
                     const trimmed = line.trim();
                     if (!trimmed.startsWith('data: ')) continue;
                     const payload = trimmed.slice(6);
-                    if (payload === '[DONE]') continue;
+                    if (payload === '[DONE]') {
+                        const tokens = buildTokens();
+                        trackTokens(tokens);
+                        finish({ content: fullContent, tokens });
+                        req.destroy();
+                        return;
+                    }
                     try {
                         const json = JSON.parse(payload);
                         if (json.usage) usage = json.usage;
                         const delta = json.choices?.[0]?.delta?.content ?? '';
                         if (delta) {
                             fullContent += delta;
-                            // Detect <think>/<thinking> transitions
                             const wasInThink = inThink;
                             const lo = Math.max(fullContent.lastIndexOf('<think>'), fullContent.lastIndexOf('<thinking>'));
                             const lc = Math.max(fullContent.lastIndexOf('</think>'), fullContent.lastIndexOf('</thinking>'));
@@ -342,34 +367,14 @@ function callOllama(prompt: string, timeoutMs: number, model: string): Promise<A
                 }
             });
             res.on('end', () => {
-                if (inThink) process.stdout.write(RESET);
-                if (fullContent.length > 0) process.stdout.write('\n');
-                const estPrompt = Math.ceil(prompt.length / 4);
-                const estCompletion = Math.ceil(fullContent.length / 4);
-                const tokens: TokenUsage = {
-                    provider: 'ollama',
-                    promptTokens: usage?.prompt_tokens ?? estPrompt,
-                    completionTokens: usage?.completion_tokens ?? estCompletion,
-                    totalTokens: (usage?.prompt_tokens ?? estPrompt) + (usage?.completion_tokens ?? estCompletion),
-                };
+                // Fallback if [DONE] was never received
+                const tokens = buildTokens();
                 trackTokens(tokens);
-                if (fullContent.length === 0 && sseBuffer.length > 0) {
-                    try {
-                        const json = JSON.parse(sseBuffer);
-                        if (json.error) {
-                            resolve({ content: '', error: json.error.message || JSON.stringify(json.error) });
-                            return;
-                        }
-                    } catch {}
-                    resolve({ content: '', error: `Empty response: ${sseBuffer.slice(0, 200)}` });
-                    return;
-                }
-                resolve({ content: fullContent, tokens });
+                finish({ content: fullContent, tokens });
             });
         });
-        req.on('error', (err) => resolve({ content: '', error: String(err) }));
-        const timer = setTimeout(() => { req.destroy(); resolve({ content: '', error: `Timeout ${timeoutMs}ms` }); }, timeoutMs);
-        req.on('close', () => clearTimeout(timer));
+        req.on('error', (err) => finish({ content: '', error: String(err) }));
+        const timer = setTimeout(() => { req.destroy(); finish({ content: '', error: `Timeout ${timeoutMs}ms` }); }, timeoutMs);
         req.write(body); req.end();
     });
 }
