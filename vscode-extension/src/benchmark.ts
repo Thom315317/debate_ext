@@ -17,7 +17,7 @@
  *
  * Judges (frontier, neutral):
  *   Claude Sonnet 4.5 + GPT-4.1 (primary)
- *   DeepSeek-v3.1:671b (tie-breaker via Ollama)
+ *   Gemini 2.5 Pro (tie-breaker via Google AI)
  *
  * Usage:
  *   npm run benchmark                                          # all 100 cases, 8 configs
@@ -294,7 +294,7 @@ function callOpenAI(
     });
 }
 
-// ─── Ollama cloud model (DeepSeek via local Ollama) ─────────────────
+// ─── Ollama cloud (generators: Qwen3-Coder, MiniMax M2) ─────────────────
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'host.docker.internal';
 const OLLAMA_PORT = parseInt(process.env.OLLAMA_PORT ?? '11434', 10);
@@ -1397,9 +1397,9 @@ async function runBenchConfig(
     }
 }
 
-// ─── Quality evaluation (blind, 3 judges: Claude + GPT + DeepSeek) ──
+// ─── Quality evaluation (blind, 2 primary judges: Claude + GPT, Gemini tie-breaker on divergence) ──
 
-type JudgeName = 'Claude' | 'GPT' | 'DeepSeek';
+type JudgeName = 'Claude' | 'GPT' | 'Gemini';
 
 interface JudgeCaller {
     name: JudgeName;
