@@ -374,13 +374,18 @@ function callGemini(prompt: string, timeoutMs: number, model: string): Promise<A
     });
 }
 
+async function withTicker<T>(fn: () => Promise<T>, intervalMs = 5000): Promise<T> {
+    const ticker = setInterval(() => process.stdout.write('.'), intervalMs);
+    try { return await fn(); } finally { clearInterval(ticker); }
+}
+
 function callAgent(
     agent: Agent, prompt: string, timeout: number,
     models: { gen1: string; gen2: string }
 ): Promise<ApiResult> {
-    return agent === 'gen1'
+    return withTicker(() => agent === 'gen1'
         ? callOllama(prompt, timeout, models.gen1)
-        : callOllama(prompt, timeout, models.gen2);
+        : callOllama(prompt, timeout, models.gen2));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1884,6 +1889,7 @@ async function main(): Promise<void> {
 
         for (let ti = 0; ti < selectedTasks.length; ti++) {
             const task = selectedTasks[ti];
+            const taskStart = Date.now();
             const taskKey = `${run}:${task.task_id}`;
 
             if (completedKeys.has(taskKey)) {
@@ -1987,10 +1993,12 @@ async function main(): Promise<void> {
                 for (const cfg of opts.configs) {
                     process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} `);
 
+                    const genStart = Date.now();
                     const gen = await generateForConfig(cfg, task, opts.maxIter, opts.timeout, genModels);
+                    const genSec = ((Date.now() - genStart) / 1000).toFixed(0);
 
                     if (gen.error) {
-                        console.log(`ERROR: ${gen.error.slice(0, 50)}`);
+                        console.log(`ERROR (${genSec}s): ${gen.error.slice(0, 50)}`);
                         configResults.push({
                             config: cfg, generatedCode: '', execStatus: 'eval_error',
                             execOutput: '', execTimeMs: 0, duration: gen.duration,
@@ -2002,7 +2010,7 @@ async function main(): Promise<void> {
                     }
 
                     const exec = await executeCode(gen.code, task.test_list, task.test_setup_code);
-                    console.log(`${gen.duration}ms, ${exec.status.toUpperCase()} (exec: ${exec.timeMs}ms)`);
+                    console.log(`${genSec}s gen, ${exec.status.toUpperCase()} (exec: ${exec.timeMs}ms)`);
 
                     // EvalPlus+ tests: only if base tests pass
                     let execPlus: { status: ExecStatus; output: string; timeMs: number } = { status: exec.status, output: '', timeMs: 0 };
@@ -2091,6 +2099,8 @@ async function main(): Promise<void> {
             completedKeys.add(taskKey);
             saveCheckpoint(fingerprint, allResults);
 
+            const taskSec = ((Date.now() - taskStart) / 1000).toFixed(0);
+            console.log(`  \u23f1 ${taskSec}s total`);
             console.log('-'.repeat(70));
         }
     }
