@@ -38,6 +38,35 @@ def extract_entry_point(code: str) -> str:
     return m.group(1) if m else "unknown"
 
 
+def _build_asserts(entry_point: str, inputs: list, canonical_solution: str, atol: float = 0) -> list:
+    """Build assert strings by running canonical_solution on each input set."""
+    if not inputs or not canonical_solution:
+        return []
+    # Compile canonical solution once
+    namespace = {}
+    try:
+        exec(canonical_solution, namespace)
+    except Exception:
+        return []
+    func = namespace.get(entry_point)
+    if func is None:
+        return []
+    asserts = []
+    for inp in inputs:
+        if not isinstance(inp, (list, tuple)):
+            inp = [inp]
+        try:
+            expected = func(*inp)
+            args_str = ', '.join(repr(x) for x in inp)
+            if atol and isinstance(expected, float):
+                asserts.append(f"assert abs({entry_point}({args_str}) - {repr(expected)}) <= {atol}")
+            else:
+                asserts.append(f"assert {entry_point}({args_str}) == {repr(expected)}")
+        except Exception:
+            pass  # skip inputs that fail on canonical solution
+    return asserts
+
+
 def load_via_evalplus():
     """Try loading via the evalplus package (preferred)."""
     from evalplus.data import get_mbpp_plus  # type: ignore
@@ -48,26 +77,25 @@ def load_via_evalplus():
         entry_point = item.get("entry_point", extract_entry_point(
             item.get("canonical_solution", item.get("code", ""))
         ))
-        # EvalPlus+ augmented tests
-        test_list_plus = []
-        plus_inputs = item.get("plus_input", item.get("plus", []))
-        if isinstance(plus_inputs, list) and len(plus_inputs) > 0:
-            expected = item.get("plus", item.get("expected_output", []))
-            if isinstance(plus_inputs[0], (list, tuple)):
-                # Format: pairs of (input, expected_output)
-                for inp, exp in zip(plus_inputs, expected if isinstance(expected, list) else []):
-                    try:
-                        test_list_plus.append(f"assert {entry_point}({', '.join(repr(x) for x in inp)}) == {repr(exp)}")
-                    except Exception:
-                        pass
-            elif isinstance(plus_inputs[0], str):
-                # Already assertion strings
-                test_list_plus = list(plus_inputs)
+
+        # ── Base tests: use 'assertion' field (proper assert strings) ──
+        assertion_str = item.get("assertion", "")
+        if assertion_str:
+            test_list = [line.strip() for line in assertion_str.strip().split("\n") if line.strip().startswith("assert")]
+        else:
+            # Fallback: build asserts from base_input + canonical_solution
+            test_list = _build_asserts(entry_point, item.get("base_input", []),
+                                       item.get("canonical_solution", ""), item.get("atol", 0))
+
+        # ── Plus tests: build asserts from plus_input + canonical_solution ──
+        test_list_plus = _build_asserts(entry_point, item.get("plus_input", []),
+                                        item.get("canonical_solution", ""), item.get("atol", 0))
+
         tasks.append({
             "task_id": task_id,
             "prompt": item.get("prompt", ""),
             "code": item.get("canonical_solution", item.get("code", "")),
-            "test_list": item.get("test_list", item.get("base_input", [])),
+            "test_list": test_list,
             "test_list_plus": test_list_plus,
             "test_setup_code": item.get("test_setup_code", ""),
             "entry_point": entry_point,

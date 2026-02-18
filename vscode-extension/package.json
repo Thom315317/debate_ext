@@ -148,6 +148,7 @@
     "lint": "eslint src --ext ts",
     "benchmark": "npm run compile && node out/benchmark.js",
     "bench2": "npm run compile && node out/benchmark_v2.js",
+    "bench:mbppplus": "npm run compile && node out/benchmark_paper.js",
     "smoke": "npm run compile && node scripts/smoke.js"
   },
   "devDependencies": {
