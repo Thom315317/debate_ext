@@ -865,6 +865,11 @@ async function evaluateWithPanel(
         };
     }
 
+    if (round1Valid.length < round1Results.length) {
+        const failed = round1Results.filter(r => r.scores === null).map(r => r.judge);
+        console.warn(`\n  \u26a0 Only ${round1Valid.length}/${round1Results.length} judges responded (${failed.join(', ')} failed)`);
+    }
+
     const round1Audit: JudgeRound[] = round1Valid.map(r => ({
         judge: r.judge, round: 'R1' as const,
         scores: labelToConfig(r.scores),
@@ -1655,6 +1660,9 @@ async function main(): Promise<void> {
             console.log(`  Resuming from checkpoint: ${rejudgedResults.length} already done`);
         }
 
+        let rejudgeConsecFail = 0;
+        const MAX_REJUDGE_FAILURES = 3;
+
         for (let idx = 0; idx < sourceTasks.length; idx++) {
             const srcTask = sourceTasks[idx];
             const taskKey = `${srcTask.run}:${srcTask.taskId}`;
@@ -1679,6 +1687,23 @@ async function main(): Promise<void> {
                     j0: empty, j1: empty, j2: empty, finalScores: empty,
                 };
             }
+
+            // Circuit-breaker for rejudge
+            const hasScores = Object.keys(judgeAudit.finalScores).length > 0;
+            const r1AllFailed = judgeAudit.round1.length === 0;
+
+            if (r1AllFailed || !hasScores) {
+                rejudgeConsecFail++;
+                console.error(`  \u26a0 Judge failure ${rejudgeConsecFail}/${MAX_REJUDGE_FAILURES} \u2014 task will be retried on --resume`);
+                if (rejudgeConsecFail >= MAX_REJUDGE_FAILURES) {
+                    console.error('\n\ud83d\uded1 3 judge failures in a row \u2014 likely API quota/payment issue.');
+                    console.error('   Saving checkpoint. Fix your API credits and rerun with --resume.\n');
+                    saveCheckpoint(rejudgeFingerprint, rejudgedResults);
+                    process.exit(2);
+                }
+                continue;
+            }
+            rejudgeConsecFail = 0;
 
             rejudgedResults.push({
                 taskId: srcTask.taskId,
@@ -1848,6 +1873,9 @@ async function main(): Promise<void> {
     }
 
     console.log('═'.repeat(90));
+
+    let consecutiveJudgeFailures = 0;
+    const MAX_JUDGE_FAILURES = 3;
 
     for (let run = 1; run <= opts.runs; run++) {
         console.log(`\n${'█'.repeat(90)}`);
@@ -2023,6 +2051,31 @@ async function main(): Promise<void> {
                     };
                     console.log('  Judges  SKIPPED (no code generated)');
                 }
+            }
+
+            // Circuit-breaker: check if judge produced scores
+            const hasScores = Object.keys(judgeAudit.finalScores).length > 0;
+            const r1AllFailed = judgeAudit.round1.length === 0;
+
+            if (!opts.dryRun && !r1AllFailed && hasScores) {
+                consecutiveJudgeFailures = 0;
+            } else if (!opts.dryRun && (r1AllFailed || !hasScores)) {
+                consecutiveJudgeFailures++;
+                console.error(`  \u26a0 Judge failure ${consecutiveJudgeFailures}/${MAX_JUDGE_FAILURES} — task will be retried on --resume`);
+
+                // Do NOT add to completedKeys, do NOT save to checkpoint
+                // so --resume will retry this task
+                if (consecutiveJudgeFailures >= MAX_JUDGE_FAILURES) {
+                    console.error('\n\ud83d\uded1 3 judge failures in a row \u2014 likely API quota/payment issue.');
+                    console.error('   Saving checkpoint. Fix your API credits and rerun with --resume.\n');
+                    saveCheckpoint(fingerprint, allResults);
+                    process.exit(2);
+                }
+                console.log('-'.repeat(70));
+                continue;
+            } else {
+                // dry-run: always succeeds
+                consecutiveJudgeFailures = 0;
             }
 
             allResults.push({
