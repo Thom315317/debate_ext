@@ -293,34 +293,78 @@ const OLLAMA_PORT = parseInt(process.env.OLLAMA_PORT ?? '11434', 10);
 function callOllama(prompt: string, timeoutMs: number, model: string): Promise<ApiResult> {
     return new Promise((resolve) => {
         const body = JSON.stringify({
-            model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, stream: false,
+            model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, stream: true,
         });
+        let fullContent = '';
+        let sseBuffer = '';
+        let inThink = false;
+        let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null;
+        const DIM = '\x1b[2m';
+        const RESET = '\x1b[0m';
+
         const req = http.request({
             hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: '/v1/chat/completions', method: 'POST',
             headers: { 'Content-Type': 'application/json' },
         }, (res) => {
-            let data = '';
-            res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+            if (res.statusCode !== 200) {
+                let errData = '';
+                res.on('data', (chunk: Buffer) => { errData += chunk.toString(); });
+                res.on('end', () => {
+                    resolve({ content: '', error: `HTTP ${res.statusCode}: ${errData.slice(0, 200)}` });
+                });
+                return;
+            }
+            res.on('data', (chunk: Buffer) => {
+                sseBuffer += chunk.toString();
+                const lines = sseBuffer.split('\n');
+                sseBuffer = lines.pop() ?? '';
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed.startsWith('data: ')) continue;
+                    const payload = trimmed.slice(6);
+                    if (payload === '[DONE]') continue;
+                    try {
+                        const json = JSON.parse(payload);
+                        if (json.usage) usage = json.usage;
+                        const delta = json.choices?.[0]?.delta?.content ?? '';
+                        if (delta) {
+                            fullContent += delta;
+                            // Detect <think>/<thinking> transitions
+                            const wasInThink = inThink;
+                            const lo = Math.max(fullContent.lastIndexOf('<think>'), fullContent.lastIndexOf('<thinking>'));
+                            const lc = Math.max(fullContent.lastIndexOf('</think>'), fullContent.lastIndexOf('</thinking>'));
+                            inThink = lo >= 0 && lo > lc;
+                            if (inThink && !wasInThink) process.stdout.write(DIM);
+                            if (!inThink && wasInThink) process.stdout.write(RESET);
+                            process.stdout.write(delta);
+                        }
+                    } catch { /* partial SSE chunk */ }
+                }
+            });
             res.on('end', () => {
-                try {
-                    const json = JSON.parse(data);
-                    if (json.error) {
-                        resolve({ content: '', error: json.error.message || JSON.stringify(json.error) });
-                    } else {
-                        const content = json.choices?.[0]?.message?.content ?? '';
-                        // Ollama: estimate tokens from content length
-                        const estPrompt = Math.ceil(prompt.length / 4);
-                        const estCompletion = Math.ceil(content.length / 4);
-                        const tokens: TokenUsage = {
-                            provider: 'ollama',
-                            promptTokens: json.usage?.prompt_tokens ?? estPrompt,
-                            completionTokens: json.usage?.completion_tokens ?? estCompletion,
-                            totalTokens: (json.usage?.prompt_tokens ?? estPrompt) + (json.usage?.completion_tokens ?? estCompletion),
-                        };
-                        trackTokens(tokens);
-                        resolve({ content, tokens });
-                    }
-                } catch { resolve({ content: '', error: `Invalid JSON: ${data.slice(0, 200)}` }); }
+                if (inThink) process.stdout.write(RESET);
+                if (fullContent.length > 0) process.stdout.write('\n');
+                const estPrompt = Math.ceil(prompt.length / 4);
+                const estCompletion = Math.ceil(fullContent.length / 4);
+                const tokens: TokenUsage = {
+                    provider: 'ollama',
+                    promptTokens: usage?.prompt_tokens ?? estPrompt,
+                    completionTokens: usage?.completion_tokens ?? estCompletion,
+                    totalTokens: (usage?.prompt_tokens ?? estPrompt) + (usage?.completion_tokens ?? estCompletion),
+                };
+                trackTokens(tokens);
+                if (fullContent.length === 0 && sseBuffer.length > 0) {
+                    try {
+                        const json = JSON.parse(sseBuffer);
+                        if (json.error) {
+                            resolve({ content: '', error: json.error.message || JSON.stringify(json.error) });
+                            return;
+                        }
+                    } catch {}
+                    resolve({ content: '', error: `Empty response: ${sseBuffer.slice(0, 200)}` });
+                    return;
+                }
+                resolve({ content: fullContent, tokens });
             });
         });
         req.on('error', (err) => resolve({ content: '', error: String(err) }));
@@ -374,18 +418,13 @@ function callGemini(prompt: string, timeoutMs: number, model: string): Promise<A
     });
 }
 
-async function withTicker<T>(fn: () => Promise<T>, intervalMs = 5000): Promise<T> {
-    const ticker = setInterval(() => process.stdout.write('.'), intervalMs);
-    try { return await fn(); } finally { clearInterval(ticker); }
-}
-
 function callAgent(
     agent: Agent, prompt: string, timeout: number,
     models: { gen1: string; gen2: string }
 ): Promise<ApiResult> {
-    return withTicker(() => agent === 'gen1'
+    return agent === 'gen1'
         ? callOllama(prompt, timeout, models.gen1)
-        : callOllama(prompt, timeout, models.gen2));
+        : callOllama(prompt, timeout, models.gen2);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
