@@ -136,6 +136,7 @@ interface ConfigRunResult {
 interface TaskResult {
     taskId: string;
     entryPoint: string;
+    taskPrompt: string;
     run: number;
     timestamp: string;
     configs: ConfigRunResult[];
@@ -175,6 +176,8 @@ interface PaperReport {
         runs: number;
         judgeBlind: boolean;
         noDebate: boolean;
+        rejudgedFrom?: string;
+        mergedFrom?: string[];
     };
     tasks: TaskResult[];
     summary: {
@@ -1461,6 +1464,9 @@ interface Args {
     dryRun: boolean;
     judgeBlind: boolean;
     noDebate: boolean;
+    rejudgeFrom: string | null;
+    merge: string | null;
+    offset: number;
 }
 
 function parseArgs(): Args {
@@ -1482,6 +1488,9 @@ function parseArgs(): Args {
     let dryRun = false;
     let judgeBlind = true;
     let noDebate = false;
+    let rejudgeFrom: string | null = null;
+    let merge: string | null = null;
+    let offset = 0;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--configs' && args[i + 1]) configs = args[++i].split(',') as BenchConfig[];
@@ -1501,6 +1510,9 @@ function parseArgs(): Args {
         else if (args[i] === '--dry-run') dryRun = true;
         else if (args[i] === '--judge-informed') judgeBlind = false;
         else if (args[i] === '--no-debate') noDebate = true;
+        else if (args[i] === '--rejudge-from' && args[i + 1]) rejudgeFrom = args[++i];
+        else if (args[i] === '--merge' && args[i + 1]) merge = args[++i];
+        else if (args[i] === '--offset' && args[i + 1]) offset = parseInt(args[++i], 10);
         else if (args[i] === '--help') {
             console.log(`CRISTAL CODE — Paper-Grade Benchmark (MBPP+ / EvalPlus)\n`);
             console.log(`Generates code with 8 collaboration configs, executes tests,`);
@@ -1523,6 +1535,9 @@ function parseArgs(): Args {
             console.log(`  --dry-run                    Simulate run with mock scores, no API calls`);
             console.log(`  --judge-informed             Disable blind mode (show exec status to judges)`);
             console.log(`  --no-debate                  Skip R2 debate + tie-breaker (R1 scores only)`);
+            console.log(`  --rejudge-from <path.json>   Re-judge from existing report (new judge settings)`);
+            console.log(`  --merge <p1.json,p2.json>    Merge multiple reports (dedup by run+taskId)`);
+            console.log(`  --offset N                   Skip first N tasks (default: 0)`);
             console.log(`\nData setup:`);
             console.log(`  python scripts/setup_mbppplus.py    # creates data/MbppPlus.jsonl`);
             process.exit(0);
@@ -1534,6 +1549,7 @@ function parseArgs(): Args {
         configs, limit, runs, maxIter, timeout,
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
         tiebreakerModel, tau, seed, tasks, resume, dryRun, judgeBlind, noDebate,
+        rejudgeFrom, merge, offset,
     };
 }
 
@@ -1544,6 +1560,207 @@ function parseArgs(): Args {
 async function main(): Promise<void> {
     const opts = parseArgs();
     tokenLog.length = 0;
+
+    // ─── --merge mode ───
+    if (opts.merge) {
+        const paths = opts.merge.split(',').map(p => p.trim());
+        console.log(`\nMERGE MODE: combining ${paths.length} reports...`);
+        const allMergedResults: TaskResult[] = [];
+        const seen = new Set<string>();
+        for (const p of paths) {
+            if (!fs.existsSync(p)) { console.error(`ERROR: file not found: ${p}`); process.exit(1); }
+            const raw: PaperReport = JSON.parse(fs.readFileSync(p, 'utf-8'));
+            for (const t of raw.tasks) {
+                const key = `${t.run}:${t.taskId}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    allMergedResults.push(t);
+                }
+            }
+            console.log(`  Loaded ${raw.tasks.length} results from ${path.basename(p)} (${seen.size} unique so far)`);
+        }
+        console.log(`  Total unique results: ${allMergedResults.length}`);
+        const mergedConfigs = [...new Set(allMergedResults.flatMap(r => r.configs.map(c => c.config)))] as BenchConfig[];
+        const mergedRuns = new Set(allMergedResults.map(r => r.run)).size;
+        const paperMetrics = computePaperMetrics(allMergedResults, mergedConfigs, mergedRuns);
+        const passAt1 = computePassAtK(allMergedResults, mergedConfigs, 1);
+        const passAt1Plus = computePassAtK(allMergedResults, mergedConfigs, 1, true);
+        const avgQuality: Partial<Record<BenchConfig, number>> = {};
+        for (const cfg of mergedConfigs) {
+            const scores = allMergedResults
+                .filter(r => r.judgeAudit.finalScores[cfg])
+                .map(r => r.judgeAudit.finalScores[cfg]!.total);
+            if (scores.length > 0) {
+                avgQuality[cfg] = parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1));
+            }
+        }
+        const costEfficiency: Partial<Record<BenchConfig, { avgCalls: number; qualityPerCall: number; passPerCall: number }>> = {};
+        for (const cfg of mergedConfigs) {
+            const calls = allMergedResults.flatMap(r => r.configs.filter(c => c.config === cfg).map(c => c.apiCallCount));
+            if (calls.length > 0) {
+                const avg = calls.reduce((a, b) => a + b, 0) / calls.length;
+                const qpc = (avgQuality[cfg] ?? 0) / avg;
+                const ppc = (passAt1[cfg] ?? 0) / avg;
+                costEfficiency[cfg] = { avgCalls: parseFloat(avg.toFixed(1)), qualityPerCall: parseFloat(qpc.toFixed(2)), passPerCall: parseFloat(ppc.toFixed(2)) };
+            }
+        }
+        const report: PaperReport = {
+            meta: {
+                date: new Date().toISOString(),
+                dataset: 'MBPP+ (EvalPlus) — MERGED',
+                gen1Model: 'various', gen2Model: 'various',
+                claudeJudgeModel: 'various', openaiJudgeModel: 'various',
+                tiebreakerModel: 'various',
+                seed: 0, tau: 0,
+                totalTasks: new Set(allMergedResults.map(r => r.taskId)).size,
+                selectedTasks: new Set(allMergedResults.map(r => r.taskId)).size,
+                configs: mergedConfigs,
+                runs: mergedRuns,
+                judgeBlind: true, noDebate: false,
+            },
+            tasks: allMergedResults,
+            summary: { passAt1, passAt1Plus, avgQuality, costEfficiency, paperMetrics, tokenUsage: {} },
+        };
+        const resultsDir = path.join(process.cwd(), 'benchmark-results');
+        fs.mkdirSync(resultsDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const reportPath = path.join(resultsDir, `bench_paper_merged_${ts}.json`);
+        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+        console.log(`\n  Merged report saved to: ${reportPath}`);
+        console.log(`  pass@1: ${JSON.stringify(passAt1)}`);
+        process.exit(0);
+    }
+
+    // ─── --rejudge-from mode ───
+    if (opts.rejudgeFrom) {
+        if (!fs.existsSync(opts.rejudgeFrom)) {
+            console.error(`ERROR: source report not found: ${opts.rejudgeFrom}`);
+            process.exit(1);
+        }
+        const source: PaperReport = JSON.parse(fs.readFileSync(opts.rejudgeFrom, 'utf-8'));
+        const sourceTasks = source.tasks;
+        console.log(`\nREJUDGE MODE: re-judging ${sourceTasks.length} results from ${path.basename(opts.rejudgeFrom)}`);
+        console.log(`  Judge mode  : ${opts.judgeBlind ? 'BLIND' : 'INFORMED'}`);
+        console.log(`  Debate      : ${opts.noDebate ? 'OFF' : 'ON'}`);
+        console.log(`  Tau         : ${opts.tau}`);
+
+        const judgeModels = { claude: opts.claudeJudgeModel, openai: opts.openaiJudgeModel };
+        const rejudgedResults: TaskResult[] = [];
+        const rejudgeFingerprint = 'rejudge:' + opts.rejudgeFrom;
+        const rejudgeCheckpoint = loadCheckpoint(rejudgeFingerprint);
+        const rejudgeCompleted = new Set<string>();
+        if (rejudgeCheckpoint) {
+            for (const r of rejudgeCheckpoint.results) rejudgedResults.push(r);
+            for (const k of rejudgeCheckpoint.completedKeys) rejudgeCompleted.add(k);
+            console.log(`  Resuming from checkpoint: ${rejudgedResults.length} already done`);
+        }
+
+        for (let idx = 0; idx < sourceTasks.length; idx++) {
+            const srcTask = sourceTasks[idx];
+            const taskKey = `${srcTask.run}:${srcTask.taskId}`;
+            if (rejudgeCompleted.has(taskKey)) continue;
+            console.log(`\n[${idx + 1}/${sourceTasks.length}] Re-judging ${srcTask.taskId} run=${srcTask.run}`);
+
+            const taskPrompt = srcTask.taskPrompt || srcTask.taskId;
+            const outputs = srcTask.configs.map(c => ({
+                config: c.config, code: c.generatedCode, execStatus: c.execStatus,
+            }));
+
+            let judgeAudit: JudgeAudit;
+            if (outputs.some(o => o.code.length > 0)) {
+                judgeAudit = await evaluateWithPanel(
+                    taskPrompt, outputs, opts.timeout, judgeModels,
+                    opts.tiebreakerModel, opts.tau, opts.judgeBlind, opts.noDebate,
+                );
+            } else {
+                const empty: Partial<Record<BenchConfig, QualityScores>> = {};
+                judgeAudit = {
+                    round1: [], divergenceDetected: false, tiebreakerUsed: false,
+                    j0: empty, j1: empty, j2: empty, finalScores: empty,
+                };
+            }
+
+            rejudgedResults.push({
+                taskId: srcTask.taskId,
+                entryPoint: srcTask.entryPoint,
+                taskPrompt,
+                run: srcTask.run,
+                timestamp: new Date().toISOString(),
+                configs: srcTask.configs,
+                judgeAudit,
+            });
+            rejudgeCompleted.add(taskKey);
+            saveCheckpoint(rejudgeFingerprint, rejudgedResults);
+        }
+
+        const allResults = rejudgedResults;
+        const mergedConfigs = [...new Set(allResults.flatMap(r => r.configs.map(c => c.config)))] as BenchConfig[];
+        const mergedRuns = new Set(allResults.map(r => r.run)).size;
+        const paperMetrics = computePaperMetrics(allResults, mergedConfigs, mergedRuns);
+        const passAt1 = computePassAtK(allResults, mergedConfigs, 1);
+        const passAt1Plus = computePassAtK(allResults, mergedConfigs, 1, true);
+        const avgQuality: Partial<Record<BenchConfig, number>> = {};
+        for (const cfg of mergedConfigs) {
+            const scores = allResults
+                .filter(r => r.judgeAudit.finalScores[cfg])
+                .map(r => r.judgeAudit.finalScores[cfg]!.total);
+            if (scores.length > 0) {
+                avgQuality[cfg] = parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1));
+            }
+        }
+        const costEfficiency: Partial<Record<BenchConfig, { avgCalls: number; qualityPerCall: number; passPerCall: number }>> = {};
+        for (const cfg of mergedConfigs) {
+            const calls = allResults.flatMap(r => r.configs.filter(c => c.config === cfg).map(c => c.apiCallCount));
+            if (calls.length > 0) {
+                const avg = calls.reduce((a, b) => a + b, 0) / calls.length;
+                const qpc = (avgQuality[cfg] ?? 0) / avg;
+                const ppc = (passAt1[cfg] ?? 0) / avg;
+                costEfficiency[cfg] = { avgCalls: parseFloat(avg.toFixed(1)), qualityPerCall: parseFloat(qpc.toFixed(2)), passPerCall: parseFloat(ppc.toFixed(2)) };
+            }
+        }
+        const tokensAgg = aggregateTokens();
+
+        console.log(`\nREJUDGE COMPLETE — ${allResults.length} results re-judged`);
+        for (const cfg of mergedConfigs) {
+            if (passAt1[cfg] !== undefined) {
+                console.log(`  ${cfg.padEnd(18)} pass@1=${passAt1[cfg]}% quality=${avgQuality[cfg] ?? 'N/A'}/10`);
+            }
+        }
+
+        const report: PaperReport = {
+            meta: {
+                date: new Date().toISOString(),
+                dataset: 'MBPP+ (EvalPlus) — REJUDGED from ' + path.basename(opts.rejudgeFrom),
+                gen1Model: source.meta.gen1Model, gen2Model: source.meta.gen2Model,
+                claudeJudgeModel: opts.claudeJudgeModel, openaiJudgeModel: opts.openaiJudgeModel,
+                tiebreakerModel: opts.tiebreakerModel,
+                seed: source.meta.seed, tau: opts.tau,
+                totalTasks: new Set(allResults.map(r => r.taskId)).size,
+                selectedTasks: new Set(allResults.map(r => r.taskId)).size,
+                configs: mergedConfigs,
+                runs: mergedRuns,
+                judgeBlind: opts.judgeBlind, noDebate: opts.noDebate,
+            },
+            tasks: allResults.map(r => ({
+                ...r,
+                configs: r.configs.map(c => ({
+                    ...c,
+                    generatedCode: (c.generatedCode || '').slice(0, 5000),
+                    execOutput: (c.execOutput || '').slice(0, 2000),
+                })),
+            })),
+            summary: { passAt1, passAt1Plus, avgQuality, costEfficiency, paperMetrics, tokenUsage: tokensAgg },
+        };
+        const resultsDir = path.join(process.cwd(), 'benchmark-results');
+        fs.mkdirSync(resultsDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const reportPath = path.join(resultsDir, `bench_paper_rejudge_${ts}.json`);
+        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+        console.log(`  Rejudge report saved to: ${reportPath}`);
+        deleteCheckpoint();
+        process.exit(0);
+    }
+
     const genModels = { gen1: opts.gen1Model, gen2: opts.gen2Model };
     const judgeModels = { claude: opts.claudeJudgeModel, openai: opts.openaiJudgeModel };
     _rng = mulberry32(opts.seed);
@@ -1574,7 +1791,7 @@ async function main(): Promise<void> {
     if (opts.tasks.length > 0) {
         allTasks = allTasks.filter(t => opts.tasks.includes(t.task_id));
     }
-    const selectedTasks = allTasks.slice(0, opts.limit);
+    const selectedTasks = allTasks.slice(opts.offset, opts.offset + opts.limit);
 
     console.log('╔══════════════════════════════════════════════════════════════════════════╗');
     console.log('║  CRISTAL CODE — Paper-Grade Benchmark (MBPP+)                           ║');
@@ -1598,6 +1815,7 @@ async function main(): Promise<void> {
     console.log(`  Tau         : ${opts.tau} (absolute /10)`);
     console.log(`  Judge mode  : ${opts.judgeBlind ? 'BLIND (default)' : 'INFORMED (ablation)'}`);
     console.log(`  Debate      : ${opts.noDebate ? 'OFF (R1 only, no escalation)' : 'ON (R1 \u2192 R2 \u2192 TB on divergence)'}`);
+    if (opts.offset > 0) console.log(`  Offset      : ${opts.offset} (skip first ${opts.offset} tasks)`);
     console.log(`  Configs     : ${opts.configs.map(c => CONFIG_SHORT[c]).join(', ')}`);
     console.log(`  Tasks       : ${selectedTasks.length} / ${allTasks.length} MBPP+ problems`);
     console.log(`  Runs        : ${opts.runs}`);
@@ -1810,6 +2028,7 @@ async function main(): Promise<void> {
             allResults.push({
                 taskId: task.task_id,
                 entryPoint: task.entry_point,
+                taskPrompt: task.prompt.slice(0, 500),
                 run,
                 timestamp: new Date().toISOString(),
                 configs: configResults,
