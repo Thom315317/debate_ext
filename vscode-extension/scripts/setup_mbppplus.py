@@ -12,6 +12,17 @@ Output:
 """
 
 import json
+
+
+class SafeEncoder(json.JSONEncoder):
+    """Handle complex numbers and other non-serializable types."""
+    def default(self, obj):
+        if isinstance(obj, complex):
+            return repr(obj)
+        try:
+            return super().default(obj)
+        except TypeError:
+            return repr(obj)
 import os
 import re
 import sys
@@ -117,7 +128,7 @@ def main():
     # Write JSONL
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         for task in tasks:
-            f.write(json.dumps(task, ensure_ascii=False) + "\n")
+            f.write(json.dumps(task, ensure_ascii=False, cls=SafeEncoder) + "\n")
 
     print(f"Wrote {len(tasks)} tasks to {OUT_PATH}")
 
