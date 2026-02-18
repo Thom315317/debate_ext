@@ -304,16 +304,10 @@ function loadHumanEval(dataPath: string): HumanEvalTask[] {
 function extractPythonCode(response: string, taskPrompt: string): string {
     let code = response;
 
-    // Try to extract from ```python ... ``` blocks
-    const codeBlocks = code.match(/```python\n([\s\S]*?)```/g);
+    // Extract from ```python / ```py / ``` blocks
+    const codeBlocks = code.match(/```(?:python|py)?\s*\n([\s\S]*?)```/g);
     if (codeBlocks) {
-        code = codeBlocks.map(b => b.replace(/```python\n/, '').replace(/```$/, '')).join('\n');
-    } else {
-        // Try ``` ... ``` blocks
-        const generic = code.match(/```\n([\s\S]*?)```/g);
-        if (generic) {
-            code = generic.map(b => b.replace(/```\n/, '').replace(/```$/, '')).join('\n');
-        }
+        code = codeBlocks.map(b => b.replace(/```(?:python|py)?\s*\n/, '').replace(/```$/, '')).join('\n');
     }
 
     // If the model returned the full function (including signature from prompt),
