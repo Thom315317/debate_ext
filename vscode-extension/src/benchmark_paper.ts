@@ -150,6 +150,7 @@ interface PaperMetrics {
         avgScoreShift: number | null;
         triggerBreakdown: { scoreDivergence: number; riskDisagreement: number; both: number };
     };
+    variance: Partial<Record<BenchConfig, { mean: number; stdDev: number; n: number }>>;
 }
 
 interface PaperReport {
@@ -1197,6 +1198,13 @@ function computeEscalationStats(results: TaskResult[]): EscalationStats {
 
 // --- Compute all paper metrics ---
 
+function computeStdDev(values: number[]): number {
+    if (values.length < 2) return 0;
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const sqDiffs = values.map(v => (v - mean) ** 2);
+    return Math.sqrt(sqDiffs.reduce((a, b) => a + b, 0) / (values.length - 1));
+}
+
 function computePaperMetrics(
     results: TaskResult[], configs: BenchConfig[], runs: number
 ): PaperMetrics {
@@ -1239,11 +1247,36 @@ function computePaperMetrics(
     // Escalation
     const escalation = computeEscalationStats(results);
 
+    // Variance (stddev) of pass@1 per config across tasks
+    const variance: Partial<Record<BenchConfig, { mean: number; stdDev: number; n: number }>> = {};
+    for (const cfg of configs) {
+        // Collect per-task pass rate (0 or 100 for each run)
+        const byTask = new Map<string, number[]>();
+        for (const r of results) {
+            const cr = r.configs.find(c => c.config === cfg);
+            if (!cr) continue;
+            const arr = byTask.get(r.taskId) ?? [];
+            arr.push(cr.execStatus === 'pass' ? 100 : 0);
+            byTask.set(r.taskId, arr);
+        }
+        // Per-task pass rate (mean across runs)
+        const taskRates: number[] = [];
+        for (const vals of byTask.values()) {
+            taskRates.push(vals.reduce((a, b) => a + b, 0) / vals.length);
+        }
+        if (taskRates.length > 0) {
+            const mean = parseFloat((taskRates.reduce((a, b) => a + b, 0) / taskRates.length).toFixed(1));
+            const stdDev = parseFloat(computeStdDev(taskRates).toFixed(1));
+            variance[cfg] = { mean, stdDev, n: taskRates.length };
+        }
+    }
+
     return {
         passAtK: passAtKResults,
         interJudge: { spearmanR1, cohensKappaR1 },
         bugCatching,
         escalation,
+        variance,
     };
 }
 
@@ -1752,6 +1785,16 @@ async function main(): Promise<void> {
 
     // Paper metrics
     const paperMetrics = computePaperMetrics(allResults, opts.configs, opts.runs);
+
+    if (paperMetrics.variance) {
+        console.log('\n  Variance (pass@1 across tasks):');
+        for (const cfg of opts.configs) {
+            const v = paperMetrics.variance[cfg];
+            if (v) {
+                console.log(`  ${CONFIG_SHORT[cfg].padEnd(10)} ${v.mean.toFixed(1)}% \u00b1 ${v.stdDev.toFixed(1)} (n=${v.n})`);
+            }
+        }
+    }
 
     console.log('\n╔══════════════════════════════════════════════════════════════════════════════════╗');
     console.log('║                              PAPER METRICS                                       ║');
