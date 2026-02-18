@@ -62,10 +62,21 @@ def _build_asserts(entry_point: str, inputs: list, canonical_solution: str, atol
             # Skip asserts with huge expected values (>10KB repr)
             if len(args_str) + len(exp_str) > 10_000:
                 continue
+            call = f"{entry_point}({args_str})"
             if atol and isinstance(expected, float):
-                asserts.append(f"assert abs({entry_point}({args_str}) - {exp_str}) <= {atol}")
+                asserts.append(f"assert abs({call} - {exp_str}) <= {atol}")
+            elif isinstance(expected, (set, frozenset)):
+                # set comparison is order-independent already
+                asserts.append(f"assert set({call}) == {exp_str}")
+            elif isinstance(expected, (tuple, list)):
+                # Use sorted() to avoid hash-randomization ordering issues
+                try:
+                    sorted_exp = sorted(expected)
+                    asserts.append(f"assert sorted({call}) == {repr(sorted_exp)}")
+                except TypeError:
+                    asserts.append(f"assert {call} == {exp_str}")
             else:
-                asserts.append(f"assert {entry_point}({args_str}) == {exp_str}")
+                asserts.append(f"assert {call} == {exp_str}")
         except Exception:
             pass  # skip inputs that fail on canonical solution
     return asserts
