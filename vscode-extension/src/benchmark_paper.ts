@@ -151,6 +151,7 @@ interface PaperMetrics {
         triggerBreakdown: { scoreDivergence: number; riskDisagreement: number; both: number };
     };
     variance: Partial<Record<BenchConfig, { mean: number; stdDev: number; n: number }>>;
+    mcnemar: { pair: string; b: number; c: number; chi2: number; pLevel: string }[];
 }
 
 interface PaperReport {
@@ -1198,6 +1199,13 @@ function computeEscalationStats(results: TaskResult[]): EscalationStats {
 
 // --- Compute all paper metrics ---
 
+function mcNemar(b: number, c: number): { chi2: number; pLevel: string } {
+    if (b + c === 0) return { chi2: 0, pLevel: 'n.s.' };
+    const chi2 = ((b - c) ** 2) / (b + c);
+    const pLevel = chi2 > 6.63 ? 'p<0.01' : chi2 > 3.84 ? 'p<0.05' : 'n.s.';
+    return { chi2, pLevel };
+}
+
 function computeStdDev(values: number[]): number {
     if (values.length < 2) return 0;
     const mean = values.reduce((a, b) => a + b, 0) / values.length;
@@ -1271,12 +1279,42 @@ function computePaperMetrics(
         }
     }
 
+    // McNemar paired tests: solo vs each collab config, per generator
+    const mcnemarResults: { pair: string; b: number; c: number; chi2: number; pLevel: string }[] = [];
+    const generators: Array<{ prefix: string; solo: BenchConfig; collabs: BenchConfig[] }> = [
+        { prefix: 'gen1', solo: 'gen1-solo', collabs: ['gen1-lead', 'gen1-orch', 'gen1-selfrefine'] },
+        { prefix: 'gen2', solo: 'gen2-solo', collabs: ['gen2-lead', 'gen2-orch', 'gen2-selfrefine'] },
+    ];
+    for (const gen of generators) {
+        if (!configs.includes(gen.solo)) continue;
+        for (const collab of gen.collabs) {
+            if (!configs.includes(collab)) continue;
+            let b = 0; // solo pass + collab fail
+            let c = 0; // solo fail + collab pass
+            for (const r of results) {
+                const soloR = r.configs.find(cr => cr.config === gen.solo);
+                const collabR = r.configs.find(cr => cr.config === collab);
+                if (!soloR || !collabR) continue;
+                const soloPass = soloR.execStatus === 'pass';
+                const collabPass = collabR.execStatus === 'pass';
+                if (soloPass && !collabPass) b++;
+                if (!soloPass && collabPass) c++;
+            }
+            const test = mcNemar(b, c);
+            mcnemarResults.push({
+                pair: `${CONFIG_SHORT[gen.solo]} vs ${CONFIG_SHORT[collab]}`,
+                b, c, chi2: parseFloat(test.chi2.toFixed(2)), pLevel: test.pLevel,
+            });
+        }
+    }
+
     return {
         passAtK: passAtKResults,
         interJudge: { spearmanR1, cohensKappaR1 },
         bugCatching,
         escalation,
         variance,
+        mcnemar: mcnemarResults,
     };
 }
 
@@ -1793,6 +1831,14 @@ async function main(): Promise<void> {
             if (v) {
                 console.log(`  ${CONFIG_SHORT[cfg].padEnd(10)} ${v.mean.toFixed(1)}% \u00b1 ${v.stdDev.toFixed(1)} (n=${v.n})`);
             }
+        }
+    }
+
+    if (paperMetrics.mcnemar && paperMetrics.mcnemar.length > 0) {
+        console.log('\n  McNemar paired tests:');
+        for (const m of paperMetrics.mcnemar) {
+            const sig = m.pLevel !== 'n.s.' ? ' *' : '';
+            console.log(`    ${m.pair.padEnd(22)} b=${m.b} c=${m.c} \u03c7\u00b2=${m.chi2.toFixed(2)} ${m.pLevel}${sig}`);
         }
     }
 
