@@ -124,6 +124,7 @@ interface ConfigRunResult {
     execOutput: string;
     execTimeMs: number;
     duration: number;
+    apiCallCount: number;
     error?: string;
     tokens?: TokenUsage;
 }
@@ -171,6 +172,7 @@ interface PaperReport {
     summary: {
         passAt1: Partial<Record<BenchConfig, number>>;
         avgQuality: Partial<Record<BenchConfig, number>>;
+        costEfficiency: Partial<Record<BenchConfig, { avgCalls: number; qualityPerCall: number; passPerCall: number }>>;
         paperMetrics: PaperMetrics;
         tokenUsage: Record<string, { promptTokens: number; completionTokens: number; totalTokens: number }>;
     };
@@ -468,12 +470,13 @@ const CODE_PROMPT_PREFIX = `Write a complete Python function that solves the fol
 async function generateSolo(
     agent: Agent, task: MbppPlusTask, timeout: number,
     models: { gen1: string; gen2: string }
-): Promise<{ code: string; duration: number; error?: string }> {
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
     const start = Date.now();
     const r = await callAgent(agent, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
     return {
         code: r.error ? '' : extractPythonCode(r.content),
         duration: Date.now() - start,
+        apiCallCount: 1,
         error: r.error,
     };
 }
@@ -481,83 +484,95 @@ async function generateSolo(
 async function generateLeadConsult(
     leader: Agent, task: MbppPlusTask, maxIter: number, timeout: number,
     models: { gen1: string; gen2: string }
-): Promise<{ code: string; duration: number; error?: string }> {
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
     const consultant: Agent = leader === 'gen1' ? 'gen2' : 'gen1';
     const start = Date.now();
+    let apiCalls = 0;
 
+    apiCalls++;
     const gen = await callAgent(leader, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
-    if (gen.error) return { code: '', duration: Date.now() - start, error: gen.error };
+    if (gen.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: gen.error };
     let code = extractPythonCode(gen.content);
 
     for (let i = 2; i <= maxIter; i++) {
         const reviewPrompt = `Review this Python function for correctness against the task description. If it's correct, respond with CONSENSUS_OK. If not, respond with CONSENSUS_KO and explain the issues.\n\nTask: ${task.prompt}\n\nImplementation:\n${code}`;
+        apiCalls++;
         const review = await callAgent(consultant, reviewPrompt, timeout, models);
         if (review.error || review.content.includes('CONSENSUS_OK')) {
-            return { code, duration: Date.now() - start };
+            return { code, duration: Date.now() - start, apiCallCount: apiCalls };
         }
         const fixPrompt = `Fix the issues in this Python function:\n\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nCurrent implementation:\n${code}\n\nOutput ONLY the corrected Python code (full function).`;
+        apiCalls++;
         const fix = await callAgent(leader, fixPrompt, timeout, models);
         if (fix.error) break;
         code = extractPythonCode(fix.content);
     }
-    return { code, duration: Date.now() - start };
+    return { code, duration: Date.now() - start, apiCallCount: apiCalls };
 }
 
 async function generateOrchCode(
     orchestrator: Agent, task: MbppPlusTask, maxIter: number, timeout: number,
     models: { gen1: string; gen2: string }
-): Promise<{ code: string; duration: number; error?: string }> {
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
     const coder: Agent = orchestrator === 'gen1' ? 'gen2' : 'gen1';
     const start = Date.now();
+    let apiCalls = 0;
 
     const planPrompt = `You are a technical architect. For the following task, produce a detailed implementation plan: algorithm choice, edge cases to handle, time complexity.\n\nTask: ${task.prompt}`;
+    apiCalls++;
     const plan = await callAgent(orchestrator, planPrompt, timeout, models);
-    if (plan.error) return { code: '', duration: Date.now() - start, error: plan.error };
+    if (plan.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: plan.error };
 
     const implPrompt = `Implement this Python function following the plan below. Output ONLY the Python code (full function).\n\nTask: ${task.prompt}\n\nPlan:\n${plan.content.slice(0, 3000)}`;
+    apiCalls++;
     const impl = await callAgent(coder, implPrompt, timeout, models);
-    if (impl.error) return { code: '', duration: Date.now() - start, error: impl.error };
+    if (impl.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: impl.error };
     let code = extractPythonCode(impl.content);
 
     for (let i = 2; i <= maxIter; i++) {
         const reviewPrompt = `Review this implementation for correctness. Respond with CONSENSUS_OK if correct, or CONSENSUS_KO with issues.\n\nTask: ${task.prompt}\n\nImplementation:\n${code}`;
+        apiCalls++;
         const review = await callAgent(orchestrator, reviewPrompt, timeout, models);
         if (review.error || review.content.includes('CONSENSUS_OK')) {
-            return { code, duration: Date.now() - start };
+            return { code, duration: Date.now() - start, apiCallCount: apiCalls };
         }
         const fixPrompt = `Fix the issues:\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nCode:\n${code}\n\nOutput ONLY the corrected Python code (full function).`;
+        apiCalls++;
         const fix = await callAgent(coder, fixPrompt, timeout, models);
         if (fix.error) break;
         code = extractPythonCode(fix.content);
     }
-    return { code, duration: Date.now() - start };
+    return { code, duration: Date.now() - start, apiCallCount: apiCalls };
 }
 
 async function generateSelfRefine(
     agent: Agent, task: MbppPlusTask, maxIter: number, timeout: number,
     models: { gen1: string; gen2: string }
-): Promise<{ code: string; duration: number; error?: string }> {
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
     const start = Date.now();
+    let apiCalls = 0;
+    apiCalls++;
     const gen = await callAgent(agent, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
-    if (gen.error) return { code: '', duration: Date.now() - start, error: gen.error };
+    if (gen.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: gen.error };
     let code = extractPythonCode(gen.content);
 
     for (let i = 2; i <= maxIter; i++) {
         const reviewPrompt = `Review your code for correctness, edge cases, and quality.\nIf you find issues, provide the corrected complete version.\nIf it's correct, respond with CONSENSUS_OK.\n\nTask: ${task.prompt}\n\nImplementation:\n${code}`;
+        apiCalls++;
         const review = await callAgent(agent, reviewPrompt, timeout, models);
         if (review.error) break;
         if (review.content.includes('CONSENSUS_OK')) {
-            return { code, duration: Date.now() - start };
+            return { code, duration: Date.now() - start, apiCallCount: apiCalls };
         }
         code = extractPythonCode(review.content);
     }
-    return { code, duration: Date.now() - start };
+    return { code, duration: Date.now() - start, apiCallCount: apiCalls };
 }
 
 async function generateForConfig(
     config: BenchConfig, task: MbppPlusTask, maxIter: number, timeout: number,
     models: { gen1: string; gen2: string }
-): Promise<{ code: string; duration: number; error?: string }> {
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
     switch (config) {
         case 'gen1-solo': return generateSolo('gen1', task, timeout, models);
         case 'gen2-solo': return generateSolo('gen2', task, timeout, models);
@@ -1535,6 +1550,7 @@ async function main(): Promise<void> {
                         config: cfg, generatedCode: `# mock ${cfg}`,
                         execStatus: mockStatus, execOutput: mockStatus === 'pass' ? 'OK' : 'AssertionError',
                         execTimeMs: Math.round(_rng() * 500), duration: mockDuration,
+                        apiCallCount: cfg.includes('solo') ? 1 : Math.round(_rng() * 4 + 2),
                     });
                     console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} ${mockDuration}ms, ${mockStatus.toUpperCase()} (mock)`);
                 }
@@ -1618,7 +1634,8 @@ async function main(): Promise<void> {
                         console.log(`ERROR: ${gen.error.slice(0, 50)}`);
                         configResults.push({
                             config: cfg, generatedCode: '', execStatus: 'eval_error',
-                            execOutput: '', execTimeMs: 0, duration: gen.duration, error: gen.error,
+                            execOutput: '', execTimeMs: 0, duration: gen.duration,
+                            apiCallCount: gen.apiCallCount, error: gen.error,
                         });
                         continue;
                     }
@@ -1630,6 +1647,7 @@ async function main(): Promise<void> {
                         config: cfg, generatedCode: gen.code,
                         execStatus: exec.status, execOutput: exec.output,
                         execTimeMs: exec.timeMs, duration: gen.duration,
+                        apiCallCount: gen.apiCallCount,
                     });
                 }
 
@@ -1712,6 +1730,26 @@ async function main(): Promise<void> {
         }
     }
 
+    // Cost-efficiency
+    const costEfficiency: Partial<Record<BenchConfig, { avgCalls: number; qualityPerCall: number; passPerCall: number }>> = {};
+    console.log('\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557');
+    console.log('\u2551                             COST-EFFICIENCY                                     \u2551');
+    console.log('\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n');
+    for (const cfg of opts.configs) {
+        const calls = allResults.flatMap(r => r.configs.filter(c => c.config === cfg).map(c => c.apiCallCount));
+        if (calls.length > 0) {
+            const avg = calls.reduce((a, b) => a + b, 0) / calls.length;
+            const qpc = (avgQuality[cfg] ?? 0) / avg;
+            const ppc = (passAt1[cfg] ?? 0) / avg;
+            costEfficiency[cfg] = {
+                avgCalls: parseFloat(avg.toFixed(1)),
+                qualityPerCall: parseFloat(qpc.toFixed(2)),
+                passPerCall: parseFloat(ppc.toFixed(1)),
+            };
+            console.log(`  ${CONFIG_SHORT[cfg].padEnd(10)} avgCalls=${avg.toFixed(1)}  quality/call=${qpc.toFixed(2)}  pass@1/call=${ppc.toFixed(1)}%`);
+        }
+    }
+
     // Paper metrics
     const paperMetrics = computePaperMetrics(allResults, opts.configs, opts.runs);
 
@@ -1783,7 +1821,7 @@ async function main(): Promise<void> {
             })),
         })),
         summary: {
-            passAt1, avgQuality, paperMetrics,
+            passAt1, avgQuality, costEfficiency, paperMetrics,
             tokenUsage: tokensAgg,
         },
     };
