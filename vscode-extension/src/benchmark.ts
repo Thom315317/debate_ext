@@ -110,7 +110,15 @@ interface QualityScores {
 
 interface JudgeDetail {
     judge: string;
+    round: 'R1' | 'R2' | 'TB';
     scores: Partial<Record<BenchConfig, QualityScores>>;
+}
+
+interface JudgeAuditV1 {
+    details: JudgeDetail[];
+    debateTriggered: boolean;
+    tiebreakerUsed: boolean;
+    divergentConfigs?: string[];
 }
 
 interface BenchmarkResult {
@@ -121,6 +129,7 @@ interface BenchmarkResult {
     configs: ConfigResult[];
     quality?: Partial<Record<BenchConfig, QualityScores>>;
     judgeDetails?: JudgeDetail[];
+    judgeAudit?: JudgeAuditV1;
 }
 
 interface CategoryStats {
@@ -155,6 +164,11 @@ interface BenchmarkReport {
         avgQuality: Partial<Record<BenchConfig, number>>;
         bestConfigCount: Partial<Record<BenchConfig, number>>;
         byCategory: CategoryStats[];
+        judgeStats?: {
+            totalEvaluations: number;
+            debatesTriggered: number;
+            tiebreakerUsed: number;
+        };
     };
 }
 
@@ -1492,7 +1506,7 @@ async function evaluateQuality(
     judgeModels: { claude: string; openai: string },
     tiebreakerModel?: string,
     judgeThreshold = 0.2,
-): Promise<{ averaged: Partial<Record<BenchConfig, QualityScores>>; details: JudgeDetail[]; debateTriggered: boolean; tiebreakerUsed: boolean } | null> {
+): Promise<{ averaged: Partial<Record<BenchConfig, QualityScores>>; details: JudgeDetail[]; debateTriggered: boolean; tiebreakerUsed: boolean; divergentConfigs: string[] } | null> {
     const valid = outputs.filter(o => o.output.length > 0);
     if (valid.length === 0) return null;
 
@@ -1539,7 +1553,8 @@ async function evaluateQuality(
     process.stdout.write(`[R1 ${r1Status}] `);
 
     const details: JudgeDetail[] = round1Valid.map(j => ({
-        judge: j.name + ' (R1)',
+        judge: j.name,
+        round: 'R1' as const,
         scores: j.scores!,
     }));
 
@@ -1548,7 +1563,7 @@ async function evaluateQuality(
     // Check if only 1 judge responded — no divergence possible
     if (round1Valid.length < 2) {
         const averaged = averageJudgeScores(round1Valid.map(j => j.scores!), allConfigs);
-        return { averaged, details, debateTriggered: false, tiebreakerUsed: false };
+        return { averaged, details, debateTriggered: false, tiebreakerUsed: false, divergentConfigs: [] };
     }
 
     // ─── Check divergence ───
@@ -1562,7 +1577,7 @@ async function evaluateQuality(
 
     if (divergentConfigs.length === 0) {
         const averaged = averageJudgeScores(round1Valid.map(j => j.scores!), allConfigs);
-        return { averaged, details, debateTriggered: false, tiebreakerUsed: false };
+        return { averaged, details, debateTriggered: false, tiebreakerUsed: false, divergentConfigs: [] };
     }
 
     // ─── Round 2: DEBATE on divergent configs ───
@@ -1610,7 +1625,7 @@ Respond in the same JSON format as before, with scores 1-10 for each metric.`;
 
     // Add round2 details
     for (const j of round2Valid) {
-        details.push({ judge: j.name + ' (R2)', scores: j.scores! });
+        details.push({ judge: j.name, round: 'R2', scores: j.scores! });
     }
 
     // Merge: round2 for divergent configs, round1 for the rest
@@ -1645,7 +1660,7 @@ Respond in the same JSON format as before, with scores 1-10 for each metric.`;
             if (!tbResult.error) {
                 const tbScores = parseJudgeResponse(tbResult.content, labels, labelMap);
                 if (tbScores) {
-                    details.push({ judge: 'Gemini (TB)', scores: tbScores });
+                    details.push({ judge: 'Gemini', round: 'TB', scores: tbScores });
                     mergedScores.push(tbScores);
                 }
             }
@@ -1653,7 +1668,7 @@ Respond in the same JSON format as before, with scores 1-10 for each metric.`;
     }
 
     const averaged = averageJudgeScores(mergedScores, allConfigs);
-    return { averaged, details, debateTriggered: true, tiebreakerUsed };
+    return { averaged, details, debateTriggered: true, tiebreakerUsed, divergentConfigs: divergentConfigs.map(c => CONFIG_SHORT[c]) };
 }
 
 function clamp(n: number): number {
@@ -1867,7 +1882,10 @@ async function main(): Promise<void> {
 
             // Mock quality scores (4-9 range) + escalation simulation
             const quality: Partial<Record<BenchConfig, QualityScores>> = {};
-            const judgeDetails: JudgeDetail[] = [];
+            const mockDetails: JudgeDetail[] = [];
+            let mockDebate = false;
+            let mockTiebreaker = false;
+            const mockDivergent: string[] = [];
 
             for (const cfg of configs) {
                 const mockScore = (j: string) => {
@@ -1876,20 +1894,26 @@ async function main(): Promise<void> {
                         codeQuality: base, readability: base, total: base, justification: `mock (${j})` };
                 };
 
-                const s1 = mockScore('claude');
-                const s2 = mockScore('openai');
+                const s1 = mockScore('Claude');
+                const s2 = mockScore('GPT');
+                mockDetails.push({ judge: 'Claude', round: 'R1', scores: { [cfg]: s1 } });
+                mockDetails.push({ judge: 'GPT', round: 'R1', scores: { [cfg]: s2 } });
                 const delta = Math.abs(s1.total - s2.total) / 10;
                 const diverged = delta > judgeThreshold;
 
                 if (diverged) {
-                    // Simulate round 2 (debate re-score)
-                    const s1b = mockScore('claude-r2');
-                    const s2b = mockScore('openai-r2');
+                    mockDebate = true;
+                    mockDivergent.push(CONFIG_SHORT[cfg]);
+                    const s1b = mockScore('Claude');
+                    const s2b = mockScore('GPT');
+                    mockDetails.push({ judge: 'Claude', round: 'R2', scores: { [cfg]: s1b } });
+                    mockDetails.push({ judge: 'GPT', round: 'R2', scores: { [cfg]: s2b } });
                     const delta2 = Math.abs(s1b.total - s2b.total) / 10;
 
                     if (delta2 > judgeThreshold) {
-                        // Tie-breaker would fire
-                        const sTb = mockScore('gemini-tb');
+                        mockTiebreaker = true;
+                        const sTb = mockScore('Gemini');
+                        mockDetails.push({ judge: 'Gemini', round: 'TB', scores: { [cfg]: sTb } });
                         quality[cfg] = sTb;
                         console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} Judge: ${s1.total}/${s2.total} → DEBATE → ${s1b.total}/${s2b.total} → TIE-BREAKER → ${sTb.total}/10`);
                     } else {
@@ -1907,7 +1931,12 @@ async function main(): Promise<void> {
             results.push({
                 caseName: tc.name, category: tc.category, complexity: tc.complexity,
                 timestamp: new Date().toISOString(), configs: caseConfigs, quality,
-                judgeDetails,
+                judgeAudit: {
+                    details: mockDetails,
+                    debateTriggered: mockDebate,
+                    tiebreakerUsed: mockTiebreaker,
+                    divergentConfigs: mockDivergent,
+                },
             });
         } else {
             // ─── REAL RUN: call APIs ─────────────────────────────
@@ -1920,7 +1949,7 @@ async function main(): Promise<void> {
 
             // Quality evaluation — blind (2 judges + escalation)
             let quality: Partial<Record<BenchConfig, QualityScores>> | undefined;
-            let judgeDetails: JudgeDetail[] | undefined;
+            let judgeAudit: JudgeAuditV1 | undefined;
             const withOutput = caseConfigs.filter(c => c.output.length > 0);
 
             if (withOutput.length > 0) {
@@ -1936,11 +1965,19 @@ async function main(): Promise<void> {
 
                 if (evalResult) {
                     quality = evalResult.averaged;
-                    judgeDetails = evalResult.details;
+                    judgeAudit = {
+                        details: evalResult.details,
+                        debateTriggered: evalResult.debateTriggered,
+                        tiebreakerUsed: evalResult.tiebreakerUsed,
+                        divergentConfigs: evalResult.divergentConfigs,
+                    };
                     const scores = configs
                         .filter(c => quality![c])
                         .map(c => `${CONFIG_SHORT[c]}=${quality![c]!.total}/10`);
-                    console.log(scores.join('  '));
+                    const suffix = evalResult.debateTriggered
+                        ? (evalResult.tiebreakerUsed ? ' [DEBATED+TB]' : ' [DEBATED]')
+                        : '';
+                    console.log(scores.join('  ') + suffix);
                 } else {
                     console.log('SKIPPED (eval failed)');
                 }
@@ -1949,7 +1986,7 @@ async function main(): Promise<void> {
             results.push({
                 caseName: tc.name, category: tc.category, complexity: tc.complexity,
                 timestamp: new Date().toISOString(), configs: caseConfigs, quality,
-                judgeDetails,
+                judgeAudit,
             });
         }
 
@@ -2145,6 +2182,11 @@ async function main(): Promise<void> {
             avgQuality,
             bestConfigCount: bestCount,
             byCategory,
+            judgeStats: {
+                totalEvaluations: results.filter(r => r.judgeAudit).length,
+                debatesTriggered: results.filter(r => r.judgeAudit?.debateTriggered).length,
+                tiebreakerUsed: results.filter(r => r.judgeAudit?.tiebreakerUsed).length,
+            },
         },
     };
 
