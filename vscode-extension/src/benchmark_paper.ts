@@ -71,6 +71,7 @@ interface MbppPlusTask {
     test_list: string[];
     test_setup_code: string;
     entry_point: string;
+    test_list_plus: string[];
 }
 
 interface QualityScores {
@@ -125,6 +126,9 @@ interface ConfigRunResult {
     execTimeMs: number;
     duration: number;
     apiCallCount: number;
+    execStatusPlus: ExecStatus;
+    execOutputPlus: string;
+    execTimeMsPlus: number;
     error?: string;
     tokens?: TokenUsage;
 }
@@ -173,6 +177,7 @@ interface PaperReport {
     tasks: TaskResult[];
     summary: {
         passAt1: Partial<Record<BenchConfig, number>>;
+        passAt1Plus: Partial<Record<BenchConfig, number>>;
         avgQuality: Partial<Record<BenchConfig, number>>;
         costEfficiency: Partial<Record<BenchConfig, { avgCalls: number; qualityPerCall: number; passPerCall: number }>>;
         paperMetrics: PaperMetrics;
@@ -388,6 +393,7 @@ function loadMbppPlus(dataPath: string): MbppPlusTask[] {
             test_list: Array.isArray(obj.test_list) ? obj.test_list : [],
             test_setup_code: obj.test_setup_code ?? '',
             entry_point: obj.entry_point ?? 'unknown',
+            test_list_plus: Array.isArray(obj.test_list_plus) ? obj.test_list_plus : [],
         };
     });
 }
@@ -996,7 +1002,7 @@ function passAtK(n: number, c: number, k: number): number {
 }
 
 function computePassAtK(
-    results: TaskResult[], configs: BenchConfig[], k: number
+    results: TaskResult[], configs: BenchConfig[], k: number, usePlus: boolean = false
 ): Partial<Record<BenchConfig, number>> {
     const out: Partial<Record<BenchConfig, number>> = {};
     for (const cfg of configs) {
@@ -1007,7 +1013,8 @@ function computePassAtK(
             if (!cr) continue;
             const entry = byTask.get(r.taskId) ?? { n: 0, c: 0 };
             entry.n++;
-            if (cr.execStatus === 'pass') entry.c++;
+            const status = usePlus ? cr.execStatusPlus : cr.execStatus;
+            if (status === 'pass') entry.c++;
             byTask.set(r.taskId, entry);
         }
         if (byTask.size === 0) continue;
@@ -1219,8 +1226,10 @@ function computePaperMetrics(
     // pass@k
     const passAtKResults: Record<string, Partial<Record<BenchConfig, number>>> = {};
     passAtKResults['k1'] = computePassAtK(results, configs, 1);
+    passAtKResults['k1_plus'] = computePassAtK(results, configs, 1, true);
     if (runs >= 5) {
         passAtKResults['k5'] = computePassAtK(results, configs, 5);
+        passAtKResults['k5_plus'] = computePassAtK(results, configs, 5, true);
     }
 
     // Inter-judge: Spearman + Cohen's kappa from R1 scores
@@ -1289,21 +1298,30 @@ function computePaperMetrics(
         if (!configs.includes(gen.solo)) continue;
         for (const collab of gen.collabs) {
             if (!configs.includes(collab)) continue;
-            let b = 0; // solo pass + collab fail
-            let c = 0; // solo fail + collab pass
+            // Base tests
+            let b = 0, c = 0;
+            // Plus tests
+            let bPlus = 0, cPlus = 0;
             for (const r of results) {
                 const soloR = r.configs.find(cr => cr.config === gen.solo);
                 const collabR = r.configs.find(cr => cr.config === collab);
                 if (!soloR || !collabR) continue;
-                const soloPass = soloR.execStatus === 'pass';
-                const collabPass = collabR.execStatus === 'pass';
-                if (soloPass && !collabPass) b++;
-                if (!soloPass && collabPass) c++;
+                // Base
+                if (soloR.execStatus === 'pass' && collabR.execStatus !== 'pass') b++;
+                if (soloR.execStatus !== 'pass' && collabR.execStatus === 'pass') c++;
+                // Plus
+                if (soloR.execStatusPlus === 'pass' && collabR.execStatusPlus !== 'pass') bPlus++;
+                if (soloR.execStatusPlus !== 'pass' && collabR.execStatusPlus === 'pass') cPlus++;
             }
             const test = mcNemar(b, c);
             mcnemarResults.push({
-                pair: `${CONFIG_SHORT[gen.solo]} vs ${CONFIG_SHORT[collab]}`,
+                pair: `${CONFIG_SHORT[gen.solo]} vs ${CONFIG_SHORT[collab]} (base)`,
                 b, c, chi2: parseFloat(test.chi2.toFixed(2)), pLevel: test.pLevel,
+            });
+            const testPlus = mcNemar(bPlus, cPlus);
+            mcnemarResults.push({
+                pair: `${CONFIG_SHORT[gen.solo]} vs ${CONFIG_SHORT[collab]} (plus)`,
+                b: bPlus, c: cPlus, chi2: parseFloat(testPlus.chi2.toFixed(2)), pLevel: testPlus.pLevel,
             });
         }
     }
@@ -1526,6 +1544,7 @@ async function main(): Promise<void> {
             test_list: [`assert task_${i + 1}(1) == ${i + 1}`, `assert task_${i + 1}(2) == ${(i + 1) * 2}`],
             test_setup_code: '',
             entry_point: `task_${i + 1}`,
+            test_list_plus: [`assert task_${i + 1}(0) == 0`, `assert task_${i + 1}(-1) == -${i + 1}`, `assert task_${i + 1}(100) == ${(i + 1) * 100}`],
         }));
     } else {
         console.error(`ERROR: MBPP+ data not found at ${dataPath}`);
@@ -1622,6 +1641,8 @@ async function main(): Promise<void> {
                         execStatus: mockStatus, execOutput: mockStatus === 'pass' ? 'OK' : 'AssertionError',
                         execTimeMs: Math.round(_rng() * 500), duration: mockDuration,
                         apiCallCount: cfg.includes('solo') ? 1 : Math.round(_rng() * 4 + 2),
+                        execStatusPlus: mockStatus === 'pass' ? (_rng() > 0.5 ? 'pass' : 'fail') : mockStatus,
+                        execOutputPlus: '', execTimeMsPlus: Math.round(_rng() * 500),
                     });
                     console.log(`  ${CONFIG_SHORT[cfg].padEnd(8)} ${mockDuration}ms, ${mockStatus.toUpperCase()} (mock)`);
                 }
@@ -1706,7 +1727,9 @@ async function main(): Promise<void> {
                         configResults.push({
                             config: cfg, generatedCode: '', execStatus: 'eval_error',
                             execOutput: '', execTimeMs: 0, duration: gen.duration,
-                            apiCallCount: gen.apiCallCount, error: gen.error,
+                            apiCallCount: gen.apiCallCount,
+                            execStatusPlus: 'eval_error', execOutputPlus: '', execTimeMsPlus: 0,
+                            error: gen.error,
                         });
                         continue;
                     }
@@ -1714,11 +1737,19 @@ async function main(): Promise<void> {
                     const exec = await executeCode(gen.code, task.test_list, task.test_setup_code);
                     console.log(`${gen.duration}ms, ${exec.status.toUpperCase()} (exec: ${exec.timeMs}ms)`);
 
+                    // EvalPlus+ tests: only if base tests pass
+                    let execPlus: { status: ExecStatus; output: string; timeMs: number } = { status: exec.status, output: '', timeMs: 0 };
+                    if (exec.status === 'pass' && task.test_list_plus.length > 0) {
+                        execPlus = await executeCode(gen.code, task.test_list_plus, task.test_setup_code);
+                    }
+
                     configResults.push({
                         config: cfg, generatedCode: gen.code,
                         execStatus: exec.status, execOutput: exec.output,
                         execTimeMs: exec.timeMs, duration: gen.duration,
                         apiCallCount: gen.apiCallCount,
+                        execStatusPlus: execPlus.status, execOutputPlus: execPlus.output,
+                        execTimeMsPlus: execPlus.timeMs,
                     });
                 }
 
@@ -1774,15 +1805,17 @@ async function main(): Promise<void> {
     // ═══════════════════════════════════════════════════════════════════
 
     console.log('\n╔══════════════════════════════════════════════════════════════════════════════════╗');
-    console.log('║                              PASS@1 RESULTS                                     ║');
+    console.log('║                      PASS@1 RESULTS (base + EvalPlus+)                            ║');
     console.log('╚══════════════════════════════════════════════════════════════════════════════════╝\n');
 
     const passAt1 = computePassAtK(allResults, opts.configs, 1);
+    const passAt1Plus = computePassAtK(allResults, opts.configs, 1, true);
     for (const cfg of opts.configs) {
         if (passAt1[cfg] !== undefined) {
-            const allForCfg = allResults.filter(r => r.configs.find(c => c.config === cfg));
-            const passed = allForCfg.filter(r => r.configs.find(c => c.config === cfg && c.execStatus === 'pass'));
-            console.log(`  ${CONFIG_SHORT[cfg].padEnd(10)} ${passAt1[cfg]}% pass@1 (${passed.length}/${allForCfg.length} raw)`);
+            const base = passAt1[cfg]!;
+            const plus = passAt1Plus[cfg] ?? base;
+            const delta = parseFloat((plus - base).toFixed(1));
+            console.log(`  ${CONFIG_SHORT[cfg].padEnd(10)} ${base}% base  |  ${plus}% plus  (\u0394 = ${delta >= 0 ? '+' : ''}${delta})`);
         }
     }
 
@@ -1910,7 +1943,7 @@ async function main(): Promise<void> {
             })),
         })),
         summary: {
-            passAt1, avgQuality, costEfficiency, paperMetrics,
+            passAt1, passAt1Plus, avgQuality, costEfficiency, paperMetrics,
             tokenUsage: tokensAgg,
         },
     };
