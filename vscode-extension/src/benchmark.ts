@@ -1686,7 +1686,7 @@ function parseArgs(): ParsedArgs {
     let complexities: Array<'simple' | 'medium' | 'complex'> = [];
     let configs: BenchConfig[] = [];
     let maxIter = 2;
-    let timeout = 300_000;
+    let timeout = 600_000;
     let gen1Model = 'qwen3-coder:480b-cloud';
     let gen2Model = 'minimax-m2:cloud';
     let claudeJudgeModel = 'claude-sonnet-4-5-20250929';
@@ -1734,7 +1734,7 @@ function parseArgs(): ParsedArgs {
             console.log(`  --complexity simple,medium   Filter by difficulty`);
             console.log(`  --configs c1,c2             Select configs (default: all 8)`);
             console.log(`  --max-iter N                Max debate iterations (default: 2)`);
-            console.log(`  --timeout N                 Timeout per call in ms (default: 300000)`);
+            console.log(`  --timeout N                 Timeout per call in ms (default: 600000)`);
             console.log(`  --gen1-model MODEL          Gen1 model (default: qwen3-coder:480b-cloud)`);
             console.log(`  --gen2-model MODEL          Gen2 model (default: minimax-m2:cloud)`);
             console.log(`  --claude-judge-model MODEL  Claude judge (default: claude-sonnet-4-5-20250929)`);
