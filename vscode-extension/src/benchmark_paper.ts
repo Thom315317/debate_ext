@@ -290,24 +290,24 @@ function callOpenAI(prompt: string, timeoutMs: number, model: string): Promise<A
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'host.docker.internal';
 const OLLAMA_PORT = parseInt(process.env.OLLAMA_PORT ?? '11434', 10);
 
-function callOllama(prompt: string, timeoutMs: number, model: string): Promise<ApiResult> {
+function callOllama(prompt: string, timeoutMs: number, model: string, agentColor: string = ''): Promise<ApiResult> {
     return new Promise((resolve) => {
         const body = JSON.stringify({
             model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, stream: true,
         });
         let fullContent = '';
         let sseBuffer = '';
-        let inThink = false;
         let done = false;
+        let state: 'init' | 'think' | 'code' | 'normal' = 'init';
         let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null = null;
-        const DIM = '\x1b[2m';
-        const RESET = '\x1b[0m';
+        const R = '\x1b[0m';
+        const brightColor = agentColor === '\x1b[36m' ? '\x1b[96m' : agentColor === '\x1b[35m' ? '\x1b[95m' : agentColor;
 
         const finish = (result: ApiResult) => {
             if (done) return;
             done = true;
             clearTimeout(timer);
-            if (inThink) process.stdout.write(RESET);
+            if (agentColor) process.stdout.write(R);
             if (fullContent.length > 0) process.stdout.write('\n');
             resolve(result);
         };
@@ -363,12 +363,19 @@ function callOllama(prompt: string, timeoutMs: number, model: string): Promise<A
                         const delta = json.choices?.[0]?.delta?.content ?? '';
                         if (delta) {
                             fullContent += delta;
-                            const wasInThink = inThink;
                             const lo = Math.max(fullContent.lastIndexOf('<think>'), fullContent.lastIndexOf('<thinking>'));
                             const lc = Math.max(fullContent.lastIndexOf('</think>'), fullContent.lastIndexOf('</thinking>'));
-                            inThink = lo >= 0 && lo > lc;
-                            if (inThink && !wasInThink) process.stdout.write(DIM);
-                            if (!inThink && wasInThink) process.stdout.write(RESET);
+                            const inThink = lo >= 0 && lo > lc;
+                            const tripleCount = (fullContent.match(/```/g) || []).length;
+                            const inCode = !inThink && tripleCount % 2 === 1;
+                            const prev = state;
+                            state = inThink ? 'think' : inCode ? 'code' : 'normal';
+                            if (state !== prev && agentColor) {
+                                process.stdout.write(R);
+                                if (state === 'think') process.stdout.write('\x1b[2m' + agentColor);
+                                else if (state === 'code') process.stdout.write('\x1b[1m' + brightColor);
+                                else process.stdout.write(agentColor);
+                            }
                             process.stdout.write(delta);
                         }
                     } catch { /* partial SSE chunk */ }
@@ -445,9 +452,10 @@ function callAgent(
     agent: Agent, prompt: string, timeout: number,
     models: { gen1: string; gen2: string }
 ): Promise<ApiResult> {
+    const color = agent === 'gen1' ? '\x1b[36m' : '\x1b[35m';
     return agent === 'gen1'
-        ? callOllama(prompt, timeout, models.gen1)
-        : callOllama(prompt, timeout, models.gen2);
+        ? callOllama(prompt, timeout, models.gen1, color)
+        : callOllama(prompt, timeout, models.gen2, color);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2053,14 +2061,15 @@ async function main(): Promise<void> {
             } else {
                 // ─── REAL RUN ───
                 for (const cfg of opts.configs) {
-                    process.stdout.write(`  ${CONFIG_SHORT[cfg].padEnd(8)} `);
+                    const cfgColor = cfg.startsWith('gen1') ? '\x1b[36m' : '\x1b[35m';
+                    process.stdout.write(`  ${cfgColor}${CONFIG_SHORT[cfg].padEnd(8)}\x1b[0m `);
 
                     const genStart = Date.now();
                     const gen = await generateForConfig(cfg, task, opts.maxIter, opts.timeout, genModels);
                     const genSec = ((Date.now() - genStart) / 1000).toFixed(0);
 
                     if (gen.error) {
-                        console.log(`ERROR (${genSec}s): ${gen.error.slice(0, 50)}`);
+                        console.log(`\x1b[31mERROR\x1b[0m (${genSec}s): ${gen.error.slice(0, 50)}`);
                         configResults.push({
                             config: cfg, generatedCode: '', execStatus: 'eval_error',
                             execOutput: '', execTimeMs: 0, duration: gen.duration,
@@ -2072,7 +2081,8 @@ async function main(): Promise<void> {
                     }
 
                     const exec = await executeCode(gen.code, task.test_list, task.test_setup_code);
-                    console.log(`${genSec}s gen, ${exec.status.toUpperCase()} (exec: ${exec.timeMs}ms)`);
+                    const sc = exec.status === 'pass' ? '\x1b[32m' : '\x1b[31m';
+                    console.log(`${genSec}s gen, ${sc}${exec.status.toUpperCase()}\x1b[0m (exec: ${exec.timeMs}ms)`);
 
                     // EvalPlus+ tests: only if base tests pass
                     let execPlus: { status: ExecStatus; output: string; timeMs: number } = { status: exec.status, output: '', timeMs: 0 };
