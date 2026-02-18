@@ -28,6 +28,7 @@ Press **F5** in VS Code to launch the Extension Development Host.
 | `logger.ts` | Output channel logging + persistent run logs |
 | `benchmark.ts` | Benchmark v1 — 100 cases, 9 categories, 8 configs |
 | `benchmark_v2.ts` | Benchmark v2 — HumanEval 164 problems + code execution |
+| `benchmark_paper.ts` | Benchmark v3 — MBPP+ paper-grade (pass@k, variance, cost-efficiency) |
 
 ## Commands
 
@@ -55,6 +56,13 @@ npm run benchmark -- --cases algo-fibonacci --configs gen1-solo,gen2-solo
 npm run bench2 -- --help
 npm run bench2 -- --dry-run --limit 5
 npm run bench2 -- --limit 10 --runs 1 --configs gen1-solo,gen2-solo
+
+# v3 — MBPP+ Paper-Grade Benchmark
+npm run bench:mbppplus -- --help
+npm run bench:mbppplus -- --dry-run --limit 5
+npm run bench:mbppplus -- --limit 30 --runs 3
+
+# Requires: python scripts/setup_mbppplus.py first (needs evalplus or datasets).
 ```
 
 Key flags: `--dry-run`, `--seed N`, `--configs`, `--judge-threshold N`,
