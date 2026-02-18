@@ -25,6 +25,7 @@ console.log('CRISTAL CODE — Smoke Tests\n');
 // 1. Check compiled artifacts exist
 check('out/benchmark.js exists', fs.existsSync(path.join(root, 'out', 'benchmark.js')));
 check('out/benchmark_v2.js exists', fs.existsSync(path.join(root, 'out', 'benchmark_v2.js')));
+check('out/benchmark_paper.js exists', fs.existsSync(path.join(root, 'out', 'benchmark_paper.js')));
 
 // 2. --help should exit 0
 try {
@@ -39,6 +40,13 @@ try {
     check('benchmark_v2.js --help exits 0', true);
 } catch (e) {
     check('benchmark_v2.js --help exits 0', e.status === 0);
+}
+
+try {
+    execSync('node out/benchmark_paper.js --help', { cwd: root, stdio: 'pipe' });
+    check('benchmark_paper.js --help exits 0', true);
+} catch (e) {
+    check('benchmark_paper.js --help exits 0', e.status === 0);
 }
 
 // 3. Security: no forbidden patterns in src/
@@ -56,7 +64,18 @@ for (const file of srcFiles) {
 }
 check('No forbidden credential patterns in src/', securityOk);
 
-// 4. No .env file
+// 3b. Check auxiliary scripts exist
+check('scripts/setup_mbppplus.py exists', fs.existsSync(path.join(root, 'scripts', 'setup_mbppplus.py')));
+
+// 4. Data file (warning only, not blocking)
+const dataExists = fs.existsSync(path.join(root, 'data', 'MbppPlus.jsonl'));
+if (dataExists) {
+    console.log('  \u2713 data/MbppPlus.jsonl exists');
+} else {
+    console.log('  \u26a0 data/MbppPlus.jsonl missing (run: python scripts/setup_mbppplus.py)');
+}
+
+// 5. No .env file
 check('.env does not exist', !fs.existsSync(path.join(root, '.env')));
 
 console.log('');
