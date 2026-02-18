@@ -4,6 +4,10 @@ src/benchmark.ts
 src/benchmark_v2.ts
 out/benchmark.js
 out/benchmark_v2.js
+src/benchmark_paper.ts
+out/benchmark_paper.js
+out/benchmark_paper.js.map
+scripts/**
 .debate_memory/**
 tools/**
 data/**
