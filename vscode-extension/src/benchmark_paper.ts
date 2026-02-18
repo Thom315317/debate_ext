@@ -395,15 +395,10 @@ function loadMbppPlus(dataPath: string): MbppPlusTask[] {
 function extractPythonCode(response: string): string {
     let code = response;
 
-    // Extract from ```python ... ``` blocks
-    const pyBlocks = code.match(/```python\n([\s\S]*?)```/g);
+    // Extract from ```python / ```py / ``` blocks
+    const pyBlocks = code.match(/```(?:python|py)?\s*\n([\s\S]*?)```/g);
     if (pyBlocks) {
-        code = pyBlocks.map(b => b.replace(/```python\n/, '').replace(/```$/, '')).join('\n');
-    } else {
-        const generic = code.match(/```\n([\s\S]*?)```/g);
-        if (generic) {
-            code = generic.map(b => b.replace(/```\n/, '').replace(/```$/, '')).join('\n');
-        }
+        code = pyBlocks.map(b => b.replace(/```(?:python|py)?\s*\n/, '').replace(/```$/, '')).join('\n');
     }
 
     return code.trim();
@@ -1425,6 +1420,7 @@ function parseArgs(): Args {
 
 async function main(): Promise<void> {
     const opts = parseArgs();
+    tokenLog.length = 0;
     const genModels = { gen1: opts.gen1Model, gen2: opts.gen2Model };
     const judgeModels = { claude: opts.claudeJudgeModel, openai: opts.openaiJudgeModel };
     _rng = mulberry32(opts.seed);
