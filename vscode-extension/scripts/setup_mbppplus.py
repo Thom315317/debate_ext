@@ -58,10 +58,14 @@ def _build_asserts(entry_point: str, inputs: list, canonical_solution: str, atol
         try:
             expected = func(*inp)
             args_str = ', '.join(repr(x) for x in inp)
+            exp_str = repr(expected)
+            # Skip asserts with huge expected values (>10KB repr)
+            if len(args_str) + len(exp_str) > 10_000:
+                continue
             if atol and isinstance(expected, float):
-                asserts.append(f"assert abs({entry_point}({args_str}) - {repr(expected)}) <= {atol}")
+                asserts.append(f"assert abs({entry_point}({args_str}) - {exp_str}) <= {atol}")
             else:
-                asserts.append(f"assert {entry_point}({args_str}) == {repr(expected)}")
+                asserts.append(f"assert {entry_point}({args_str}) == {exp_str}")
         except Exception:
             pass  # skip inputs that fail on canonical solution
     return asserts
