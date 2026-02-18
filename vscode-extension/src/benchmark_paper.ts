@@ -352,6 +352,14 @@ function callOllama(prompt: string, timeoutMs: number, model: string): Promise<A
                     try {
                         const json = JSON.parse(payload);
                         if (json.usage) usage = json.usage;
+                        const fr = json.choices?.[0]?.finish_reason;
+                        if (fr === 'stop' || fr === 'length') {
+                            const tokens = buildTokens();
+                            trackTokens(tokens);
+                            finish({ content: fullContent, tokens });
+                            req.destroy();
+                            return;
+                        }
                         const delta = json.choices?.[0]?.delta?.content ?? '';
                         if (delta) {
                             fullContent += delta;
@@ -367,7 +375,17 @@ function callOllama(prompt: string, timeoutMs: number, model: string): Promise<A
                 }
             });
             res.on('end', () => {
-                // Fallback if [DONE] was never received
+                // Flush any remaining buffer
+                if (sseBuffer.trim().length > 0) {
+                    const trimmed = sseBuffer.trim();
+                    if (trimmed.startsWith('data: ') && trimmed.slice(6) !== '[DONE]') {
+                        try {
+                            const json = JSON.parse(trimmed.slice(6));
+                            const delta = json.choices?.[0]?.delta?.content ?? '';
+                            if (delta) fullContent += delta;
+                        } catch {}
+                    }
+                }
                 const tokens = buildTokens();
                 trackTokens(tokens);
                 finish({ content: fullContent, tokens });
