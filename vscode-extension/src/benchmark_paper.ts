@@ -293,7 +293,7 @@ const OLLAMA_PORT = parseInt(process.env.OLLAMA_PORT ?? '11434', 10);
 function callOllama(prompt: string, timeoutMs: number, model: string, agentColor: string = ''): Promise<ApiResult> {
     return new Promise((resolve) => {
         const body = JSON.stringify({
-            model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, stream: true,
+            model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, max_tokens: 4096, stream: true,
         });
         let fullContent = '';
         let sseBuffer = '';
