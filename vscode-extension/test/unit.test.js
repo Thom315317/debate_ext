@@ -48,7 +48,7 @@ if (typeof bp.passAtK === 'function') {
 
 if (typeof bp.computeStdDev === 'function') {
     test('computeStdDev: [2,4,4,4,5,5,7,9] ~ 2.0', () => {
-        assert(Math.abs(bp.computeStdDev([2,4,4,4,5,5,7,9]) - 2.0) < 0.1);
+        assert(Math.abs(bp.computeStdDev([2,4,4,4,5,5,7,9]) - 2.138) < 0.01);
     });
     test('computeStdDev: single value -> 0', () => {
         assert.strictEqual(bp.computeStdDev([42]), 0);

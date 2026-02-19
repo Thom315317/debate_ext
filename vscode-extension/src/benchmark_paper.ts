@@ -2359,7 +2359,10 @@ if (typeof module !== 'undefined') {
     };
 }
 
-main().catch(err => {
-    console.error('FATAL:', err);
-    process.exit(1);
-});
+// Only run main() when executed directly (not when require'd for tests)
+if (require.main === module) {
+    main().catch(err => {
+        console.error('FATAL:', err);
+        process.exit(1);
+    });
+}
