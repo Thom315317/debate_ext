@@ -11,7 +11,7 @@
   <circle cx="100" cy="100" r="95" fill="url(#bg_glow)" stroke="#e94560" stroke-width="2"/>
 
   <!-- Comedy mask (happy) - slightly left and behind, white/cream inverted -->
-  <g transform="translate(38, 14) scale(0.90)">
+  <g transform="translate(38, 18) scale(0.90)">
     <!-- Face shape -->
     <path d="M40,5 C15,5 5,20 5,42 C5,68 20,88 40,95 C60,88 75,68 75,42 C75,20 65,5 40,5Z"
           fill="#f0ece4" stroke="#ddd5c8" stroke-width="1.5"/>
@@ -35,7 +35,7 @@
   </g>
 
   <!-- Tragedy mask (sad) - slightly right and in front, brighter white -->
-  <g transform="translate(84, 18) scale(0.90)">
+  <g transform="translate(84, 22) scale(0.90)">
     <!-- Face shape -->
     <path d="M40,5 C15,5 5,20 5,42 C5,68 20,88 40,95 C60,88 75,68 75,42 C75,20 65,5 40,5Z"
           fill="#faf6f0" stroke="#e0d8cc" stroke-width="1.5"/>
@@ -62,11 +62,11 @@
   </g>
 
   <!-- DEBATE title - bold stylish font, closer to masks -->
-  <text x="100" y="128" text-anchor="middle"
+  <text x="100" y="132" text-anchor="middle"
         font-family="'Georgia', 'Times New Roman', serif"
-        font-size="28" font-weight="bold" fill="#f0ece4"
+        font-size="27" font-weight="bold" fill="#f0ece4"
         letter-spacing="6" font-style="italic">DEBATE</text>
 
   <!-- Subtle underline accent -->
-  <line x1="45" y1="134" x2="155" y2="134" stroke="#e94560" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+  <line x1="45" y1="138" x2="155" y2="138" stroke="#e94560" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
 </svg>
