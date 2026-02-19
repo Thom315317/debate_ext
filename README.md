@@ -1,7 +1,7 @@
 # CRISTAL CODE
 
 AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code.
-Includes a benchmark suite that evaluates inter-LLM collaboration quality.
+Includes a paper-grade benchmark suite that evaluates inter-LLM collaboration quality.
 
 ## Architecture
 
@@ -9,11 +9,10 @@ Includes a benchmark suite that evaluates inter-LLM collaboration quality.
 debate_ext/
   vscode-extension/    ← VS Code extension (TypeScript)
     src/               ← Extension source + benchmark suites
-    scripts/           ← smoke.js (CI smoke tests)
-    data/              ← HumanEval.jsonl (benchmark v2)
+    scripts/           ← smoke.js, setup_mbppplus.py
+    data/              ← MbppPlus.jsonl (378 MBPP+ tasks)
   tools/               ← Python auxiliary scripts
-    .venv/             ← Python virtual environment
-    scripts/           ← patch_utils.py, setup_venv.sh
+  scripts/             ← Root-level scripts
 ```
 
 ### Extension (VS Code sidebar)
@@ -22,20 +21,38 @@ Claude (Anthropic API) and GPT (OpenAI API) collaborate in a debate loop
 to generate, review, and refine code changes. The extension auto-detects
 task complexity and adapts the debate depth accordingly.
 
-### Benchmark Suite
+### Paper-Grade Benchmark (`benchmark_paper.ts`)
 
-Two benchmark harnesses compare 8 collaboration configurations:
+A rigorous evaluation framework comparing 8 collaboration configurations
+on MBPP+ (378 Python tasks from EvalPlus). Designed for reproducible
+research with full audit trails.
 
-| Config | Description |
-|--------|-------------|
-| `gen1-solo` | Qwen3-Coder solo |
-| `gen2-solo` | MiniMax M2 solo |
-| `gen1-lead` / `gen2-lead` | One leads, the other consults |
-| `gen1-orch` / `gen2-orch` | One orchestrates, the other codes |
-| `gen1-selfrefine` / `gen2-selfrefine` | Single agent self-reviews |
+#### Generators
 
-**Generators** are mid-tier models via Ollama (Qwen3-Coder 480B, MiniMax M2).
-**Judges** are frontier models from distinct providers:
+Mid-tier models via Ollama Cloud — chosen to reveal collaboration effects
+(frontier models saturate easy benchmarks):
+
+| Alias | Model | Provider |
+|-------|-------|----------|
+| QC | Qwen3-Coder 480B | Ollama Cloud |
+| MM | MiniMax M2 | Ollama Cloud |
+
+#### 8 Collaboration Configurations
+
+| Config | Short | Description |
+|--------|-------|-------------|
+| `gen1-solo` | QC.Solo | Qwen3-Coder generates alone (baseline) |
+| `gen2-solo` | MM.Solo | MiniMax M2 generates alone (baseline) |
+| `gen1-lead` | QC.Lead | Qwen3 leads, MiniMax assists |
+| `gen2-lead` | MM.Lead | MiniMax leads, Qwen3 assists |
+| `gen1-orch` | QC.Orch | Qwen3 orchestrates (reviewer), MiniMax codes |
+| `gen2-orch` | MM.Orch | MiniMax orchestrates (reviewer), Qwen3 codes |
+| `gen1-selfrefine` | QC.SRef | Qwen3 generates then self-reviews (up to N iterations) |
+| `gen2-selfrefine` | MM.SRef | MiniMax generates then self-reviews (up to N iterations) |
+
+#### 3-Level Judge Evaluation
+
+Three frontier judges from **three distinct providers** — zero conflict of interest:
 
 | Role | Model | Provider |
 |------|-------|----------|
@@ -43,41 +60,77 @@ Two benchmark harnesses compare 8 collaboration configurations:
 | Judge 2 | GPT-4.1 | OpenAI API |
 | Tie-breaker | Gemini 2.5 Pro | Google AI API |
 
-Three distinct providers = zero conflict of interest.
+##### Evaluation Protocol
 
-#### Judge Escalation
+Each task evaluation follows a 3-level escalation:
 
-1. **Round 1** — Both judges score independently (correctness, completeness, edge cases, code quality, readability)
-2. **Divergence check** — If scores diverge >20%, judges debate
-3. **Round 2** — Judges see each other's scores + arguments, re-score
-4. **Tie-breaker** — If still divergent, Gemini 2.5 Pro makes the final call
+```
+R1: Both judges score ALL candidates independently (blind, shuffled labels)
+    Criteria: correctness, completeness, edgeCases, codeQuality, readability
+    + holistic total (1-10) + risk_fail_prob (0.0-1.0)
+                    |
+                    v
+    DIVERGENCE CHECK (two triggers):
+      (a) |total_judge1 - total_judge2| > tau   (default tau = 2.0)
+      (b) risk_fail_prob on opposite sides of 0.5
+    If no divergence → DONE. Final = average of R1 scores.
+                    |
+                    v
+R2: DEBATE. Both judges see each other's R1 scores + justifications
+    for the divergent candidates only. They re-score considering
+    the other judge's arguments.
+    If convergence → DONE. Final = average of merged scores.
+                    |
+                    v
+TB: TIE-BREAKER. Gemini receives the original R1 prompt (blind).
+    It scores ALL candidates as an independent 3rd judge.
+    Final = 3-way average.
+```
+
+Every evaluation produces a full `judgeAudit` with three score snapshots:
+- `j0` — R1 baseline average
+- `j1` — post-debate average (R2 replaces R1 for divergent labels)
+- `j2` — final average (includes tiebreaker if used)
+
+#### Safety Features
+
+- **Checkpoint/resume**: saves after each task, resume with `--resume`
+- **Circuit-breaker**: 3 consecutive judge API failures → save + exit(2), retryable on resume
+- **Streaming output**: real-time display of LLM generation with ANSI colors per agent
+- **Think detection**: dims `<think>`/`<thinking>` blocks, bolds code blocks
+
+#### Paper Metrics
+
+The final report includes:
+
+| Metric | Description |
+|--------|-------------|
+| pass@1, pass@k | Chen et al. unbiased estimator, base + EvalPlus+ tests |
+| Variance | stddev of pass@1 across tasks per config |
+| Inter-judge agreement | Spearman correlation + Cohen's kappa (R1) |
+| Escalation stats | debates triggered, tiebreaker usage, avg score shift |
+| McNemar test | paired significance (solo vs. collab) |
+| Cost-efficiency | API calls per config, quality-per-call, pass-per-call |
+| Token usage | per-provider prompt/completion/total tokens |
 
 ## Prerequisites
 
 - **Node.js** >= 18 and **npm**
-- **Python 3** with `venv` module (for patch utilities)
-- **Ollama** with mid-tier models pulled (for benchmarks)
+- **Python 3** with `evalplus` package (for MBPP+ data)
+- **Ollama** with cloud models (or local models)
 
 ## Environment Variables
 
-Copy `.env.example` and fill in your keys:
-
-```bash
-cp vscode-extension/.env.example vscode-extension/.env
-```
-
 | Variable | Required for | Description |
 |----------|-------------|-------------|
-| `ANTHROPIC_API_KEY` | Extension + Benchmarks | Anthropic API key (sk-ant-...) |
-| `OPENAI_API_KEY` | Extension + Benchmarks | OpenAI API key (sk-proj-...) |
-| `GEMINI_API_KEY` | Benchmarks (tie-breaker) | Google AI API key (AIza...) |
-| `OLLAMA_HOST` | Benchmarks | Ollama host (default: localhost) |
+| `ANTHROPIC_API_KEY` | Extension + Benchmarks | Anthropic API key |
+| `OPENAI_API_KEY` | Extension + Benchmarks | OpenAI API key |
+| `GEMINI_API_KEY` | Benchmarks (tie-breaker) | Google AI API key |
+| `OLLAMA_HOST` | Benchmarks | Ollama host (default: host.docker.internal) |
 | `OLLAMA_PORT` | Benchmarks | Ollama port (default: 11434) |
-| `GEN1_MODEL` | Benchmarks | Generator 1 model name |
-| `GEN2_MODEL` | Benchmarks | Generator 2 model name |
 
-API keys for the extension are stored securely via VS Code SecretStorage
-(configured from the sidebar gear icon).
+API keys for the extension are stored securely via VS Code SecretStorage.
+Benchmark keys are read from environment variables only.
 
 ## Quick Start
 
@@ -90,27 +143,75 @@ npm run watch    # auto-compile on save
 # Press F5 in VS Code to launch Extension Development Host
 ```
 
-### Run Benchmarks
+### Setup MBPP+ Data
 
 ```bash
 cd vscode-extension
+python3 -m venv .venv && source .venv/bin/activate
+pip install evalplus
+python3 scripts/setup_mbppplus.py    # creates data/MbppPlus.jsonl (378 tasks)
+```
 
-# Benchmark v1 — 100 hand-crafted cases, 9 categories
-npm run benchmark -- --cases algo-fibonacci --configs gen1-solo,gen2-solo
+### Run Paper Benchmark
 
-# Benchmark v2 — HumanEval (164 Python problems + execution)
-npm run bench2 -- --limit 10 --runs 1
+```bash
+cd vscode-extension
+npm run compile
 
-# Dry-run (mock scores, no API calls, validate pipeline)
-npm run benchmark -- --dry-run
-npm run bench2 -- --dry-run --limit 5
+# See all options
+node out/benchmark_paper.js --help
+
+# Dry-run (mock scores, no API calls)
+node out/benchmark_paper.js --dry-run --limit 5
+
+# Full run (378 tasks, 3 runs, all 8 configs)
+node out/benchmark_paper.js --limit 378 --runs 3
+
+# Resume after interruption
+node out/benchmark_paper.js --limit 378 --runs 3 --resume
+
+# Run specific tasks only
+node out/benchmark_paper.js --tasks Mbpp/2,Mbpp/3 --runs 1
+
+# Skip first N tasks
+node out/benchmark_paper.js --limit 378 --runs 3 --offset 100
+
+# Ablation: disable debate (R1 scores only)
+node out/benchmark_paper.js --limit 378 --runs 3 --no-debate
+
+# Ablation: informed judges (show exec status)
+node out/benchmark_paper.js --limit 378 --runs 3 --judge-informed
+```
+
+### Post-Processing
+
+```bash
+# Re-judge with different settings (e.g., different tau)
+node out/benchmark_paper.js --rejudge-from benchmark-results/report.json --judge-threshold 3.0
+
+# Merge results from multiple runs
+node out/benchmark_paper.js --merge benchmark-results/run1.json,benchmark-results/run2.json
 ```
 
 ### Smoke Tests
 
 ```bash
-npm run smoke    # checks build artifacts, --help, security patterns
+npm run smoke    # checks build artifacts, --help, security patterns, MbppPlus.jsonl
 ```
+
+## Output
+
+Results are saved to `benchmark-results/`:
+
+| File | Content |
+|------|---------|
+| `checkpoint_paper.json` | In-progress checkpoint (auto-saved after each task) |
+| `bench_paper_<timestamp>.json` | Final report with all metrics |
+
+The final JSON report contains:
+- `meta` — full experiment configuration (models, seed, tau, flags)
+- `tasks[]` — per-task results with generated code, exec status, judge audit
+- `summary` — pass@1, quality scores, cost-efficiency, paper metrics
 
 ## VS Code Commands
 
@@ -122,22 +223,6 @@ npm run smoke    # checks build artifacts, --help, security patterns
 | `CRISTAL CODE: Stop Debate` | Stop the current debate |
 | `CRISTAL CODE: Clear Chat` | Clear chat history |
 | `CRISTAL CODE: Configuration` | Configure models and settings |
-| `CRISTAL CODE: Configure Anthropic Key` | Set Anthropic API key (SecretStorage) |
-| `CRISTAL CODE: Configure OpenAI Key` | Set OpenAI API key (SecretStorage) |
-| `CRISTAL CODE: Show Logs` | Show the output channel |
-
-## Extension Settings
-
-Settings are under `cristalCode.*` in VS Code:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `claudeModel` | `claude-sonnet-4-20250514` | Claude model for the extension |
-| `claudeTimeout` | `300000` | Claude API timeout (ms) |
-| `openaiModel` | `gpt-4o` | OpenAI model for the extension |
-| `openaiTimeout` | `300000` | OpenAI API timeout (ms) |
-| `testCommand` | *(empty)* | Test command between iterations |
-| `pythonPath` | *(empty)* | Python path (auto-detected) |
 
 ## Security
 
@@ -145,4 +230,3 @@ Settings are under `cristalCode.*` in VS Code:
 - Extension keys stored via VS Code SecretStorage (OS keychain)
 - Benchmark keys via environment variables only
 - `.env` excluded by `.gitignore`
-- Forbidden credential patterns checked on every build
