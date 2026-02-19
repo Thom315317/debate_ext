@@ -20,7 +20,7 @@ function check(label, ok) {
     }
 }
 
-console.log('CRISTAL CODE — Smoke Tests\n');
+console.log('DEBATE EXT — Smoke Tests\n');
 
 // 1. Check compiled artifacts exist
 check('out/benchmark.js exists', fs.existsSync(path.join(root, 'out', 'benchmark.js')));

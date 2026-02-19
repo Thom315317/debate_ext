@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CRISTAL CODE — Paper-Grade Benchmark (MBPP+ / EvalPlus)
+ * DEBATE EXT — Paper-Grade Benchmark (MBPP+ / EvalPlus)
  *
  * Generators (mid-tier, via Ollama):
  *   gen1 = Qwen3-Coder 480B    gen2 = MiniMax M2
@@ -1594,7 +1594,7 @@ function parseArgs(): Args {
         else if (args[i] === '--merge' && args[i + 1]) merge = args[++i];
         else if (args[i] === '--offset' && args[i + 1]) offset = parseInt(args[++i], 10);
         else if (args[i] === '--help') {
-            console.log(`CRISTAL CODE — Paper-Grade Benchmark (MBPP+ / EvalPlus)\n`);
+            console.log(`DEBATE EXT — Paper-Grade Benchmark (MBPP+ / EvalPlus)\n`);
             console.log(`Generates code with 8 collaboration configs, executes tests,`);
             console.log(`evaluates with 2-judge debate + tie-breaker, computes paper metrics.\n`);
             console.log(`Options:`);
@@ -1894,7 +1894,7 @@ async function main(): Promise<void> {
     const selectedTasks = allTasks.slice(opts.offset, opts.offset + opts.limit);
 
     console.log('╔══════════════════════════════════════════════════════════════════════════╗');
-    console.log('║  CRISTAL CODE — Paper-Grade Benchmark (MBPP+)                           ║');
+    console.log('║  DEBATE EXT — Paper-Grade Benchmark (MBPP+)                           ║');
     console.log('║  8 configs × N tasks × R runs + 2-judge debate + tie-breaker            ║');
     if (opts.dryRun) {
     console.log('║  DRY-RUN MODE — mock scores, no API calls                               ║');

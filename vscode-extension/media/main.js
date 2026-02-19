@@ -1,4 +1,4 @@
-// CRISTAL CODE — Chat panel webview script
+// DEBATE EXT — Chat panel webview script
 (function () {
     // @ts-ignore
     const vscode = acquireVsCodeApi();
@@ -18,7 +18,7 @@
     function showWelcome() {
         messagesEl.innerHTML = `
             <div class="welcome">
-                <h2>◆ CRISTAL CODE</h2>
+                <h2>◆ DEBATE EXT</h2>
                 <p>AI debate orchestrator</p>
                 <p>Claude Code generates — Codex/GPT reviews — iterate until consensus.</p>
                 <div class="hint">Select a mode and describe your task below.</div>

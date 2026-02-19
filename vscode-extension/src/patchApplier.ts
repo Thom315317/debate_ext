@@ -218,7 +218,7 @@ export async function fallbackPythonPatch(
     diff: string,
     extensionRoot: string
 ): Promise<string | null> {
-    const config = vscode.workspace.getConfiguration('cristalCode');
+    const config = vscode.workspace.getConfiguration('debateExt');
     let pythonPath = config.get<string>('pythonPath', '').trim();
 
     if (!pythonPath) {

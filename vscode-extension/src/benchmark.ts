@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CRISTAL CODE — Benchmark (8 configurations)
+ * DEBATE EXT — Benchmark (8 configurations)
  *
  * Generators (mid-tier, via Ollama):
  *   gen1 = Qwen3-Coder 480B    gen2 = MiniMax M2
@@ -1741,7 +1741,7 @@ function parseArgs(): ParsedArgs {
         } else if (args[i] === '--dry-run') {
             dryRun = true;
         } else if (args[i] === '--help') {
-            console.log(`CRISTAL CODE Benchmark — 100 cases, 9 categories, 8 configurations\n`);
+            console.log(`DEBATE EXT Benchmark — 100 cases, 9 categories, 8 configurations\n`);
             console.log(`Configs: ${ALL_CONFIGS.join(', ')}\n`);
             console.log(`Options:`);
             console.log(`  --cases name1,name2         Run specific cases by name`);
@@ -1798,7 +1798,7 @@ async function main(): Promise<void> {
     _rng = mulberry32(seed);
 
     console.log('╔══════════════════════════════════════════════════════════════════════╗');
-    console.log('║     CRISTAL CODE — Benchmark Suite (8 configs × 100 cases)          ║');
+    console.log('║     DEBATE EXT — Benchmark Suite (8 configs × 100 cases)          ║');
     console.log('║     Solos · Lead/Consult · Orch/Code · Self-Refine                  ║');
     console.log('║     Mid-tier generators + Frontier judges                           ║');
     if (dryRun) {

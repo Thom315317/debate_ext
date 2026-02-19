@@ -1,20 +1,20 @@
 import * as vscode from 'vscode';
-import { CristalChatProvider } from './chatPanel';
+import { DebateChatProvider } from './chatPanel';
 import { runDebateFromChat } from './orchestrator';
 import { getOutputChannel, log, showInfo, dispose as disposeLogger } from './logger';
 import { setSecretStorage, getOpenAIKey, setOpenAIKey, deleteOpenAIKey, getAnthropicKey, setAnthropicKey, deleteAnthropicKey } from './cliRunner';
 
-let chatProvider: CristalChatProvider;
+let chatProvider: DebateChatProvider;
 
 export function activate(context: vscode.ExtensionContext): void {
-    log('CRISTAL CODE activating...');
+    log('DEBATE EXT activating...');
 
     setSecretStorage(context.secrets);
 
-    chatProvider = new CristalChatProvider(context.extensionUri);
+    chatProvider = new DebateChatProvider(context.extensionUri);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
-            CristalChatProvider.viewType,
+            DebateChatProvider.viewType,
             chatProvider
         )
     );
@@ -26,37 +26,37 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('cristalCode.runDebate', () => {
+        vscode.commands.registerCommand('debateExt.runDebate', () => {
             promptAndRun();
         }),
-        vscode.commands.registerCommand('cristalCode.runSimple', () => {
+        vscode.commands.registerCommand('debateExt.runSimple', () => {
             promptAndRun('SIMPLE');
         }),
-        vscode.commands.registerCommand('cristalCode.runComplex', () => {
+        vscode.commands.registerCommand('debateExt.runComplex', () => {
             promptAndRun('COMPLEXE');
         }),
-        vscode.commands.registerCommand('cristalCode.showLogs', () => {
+        vscode.commands.registerCommand('debateExt.showLogs', () => {
             getOutputChannel().show(true);
         }),
-        vscode.commands.registerCommand('cristalCode.configureCLIs', () => {
+        vscode.commands.registerCommand('debateExt.configureCLIs', () => {
             configure();
         }),
-        vscode.commands.registerCommand('cristalCode.configureOpenAIKey', () => {
+        vscode.commands.registerCommand('debateExt.configureOpenAIKey', () => {
             configureOpenAIKey();
         }),
-        vscode.commands.registerCommand('cristalCode.configureAnthropicKey', () => {
+        vscode.commands.registerCommand('debateExt.configureAnthropicKey', () => {
             configureAnthropicKey();
         }),
-        vscode.commands.registerCommand('cristalCode.clearChat', () => {
+        vscode.commands.registerCommand('debateExt.clearChat', () => {
             chatProvider.clearMessages();
         }),
-        vscode.commands.registerCommand('cristalCode.stopDebate', () => {
+        vscode.commands.registerCommand('debateExt.stopDebate', () => {
             showInfo('Stop requested — the current operation will be cancelled.');
         })
     );
 
     checkSetup();
-    log('CRISTAL CODE activated.');
+    log('DEBATE EXT activated.');
 }
 
 export function deactivate(): void {
@@ -85,7 +85,7 @@ function handleChatInput(input: string): void {
 
 async function promptAndRun(forceMode?: 'SIMPLE' | 'MOYEN' | 'COMPLEXE'): Promise<void> {
     const prompt = await vscode.window.showInputBox({
-        prompt: 'Describe the task for CRISTAL CODE',
+        prompt: 'Describe the task for DEBATE EXT',
         placeHolder: 'e.g., Refactor the authentication module to use JWT tokens',
         ignoreFocusOut: true,
     });
@@ -95,7 +95,7 @@ async function promptAndRun(forceMode?: 'SIMPLE' | 'MOYEN' | 'COMPLEXE'): Promis
 }
 
 async function checkSetup(): Promise<void> {
-    const config = vscode.workspace.getConfiguration('cristalCode');
+    const config = vscode.workspace.getConfiguration('debateExt');
 
     const hasAnthropic = !!(await getAnthropicKey());
     const hasOpenAI = !!(await getOpenAIKey());
@@ -140,7 +140,7 @@ async function configureOpenAIKey(): Promise<void> {
     ];
 
     const action = await vscode.window.showQuickPick(items, {
-        title: `CRISTAL CODE — OpenAI API Key ${existing ? '(configured)' : '(not set)'}`,
+        title: `DEBATE EXT — OpenAI API Key ${existing ? '(configured)' : '(not set)'}`,
         placeHolder: existing ? 'Your key is already configured. Update or remove it?' : 'Choose how to connect your OpenAI account',
     });
 
@@ -197,7 +197,7 @@ async function configureAnthropicKey(): Promise<void> {
     ];
 
     const action = await vscode.window.showQuickPick(items, {
-        title: `CRISTAL CODE — Anthropic API Key ${existing ? '(configured)' : '(not set)'}`,
+        title: `DEBATE EXT — Anthropic API Key ${existing ? '(configured)' : '(not set)'}`,
         placeHolder: existing ? 'API key active. Update or remove?' : 'Add your Anthropic API key',
     });
 
@@ -232,7 +232,7 @@ async function configureAnthropicKey(): Promise<void> {
 }
 
 async function configure(): Promise<void> {
-    const config = vscode.workspace.getConfiguration('cristalCode');
+    const config = vscode.workspace.getConfiguration('debateExt');
 
     const choice = await vscode.window.showQuickPick(
         [
@@ -242,7 +242,7 @@ async function configure(): Promise<void> {
             { label: '$(server) Configure OpenAI Model', id: 'openai-model' },
             { label: '$(beaker) Configure Test Command', id: 'test-cmd' },
         ],
-        { title: 'CRISTAL CODE — Configuration', placeHolder: 'What do you want to configure?' }
+        { title: 'DEBATE EXT — Configuration', placeHolder: 'What do you want to configure?' }
     );
 
     if (!choice) { return; }
