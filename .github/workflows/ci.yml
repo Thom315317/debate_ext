@@ -1,0 +1,16 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install and Compile
+        run: cd vscode-extension && npm ci && npm run compile
+      - name: Smoke Tests
+        run: cd vscode-extension && npm run smoke
+      - name: Unit Tests
+        run: cd vscode-extension && npm test

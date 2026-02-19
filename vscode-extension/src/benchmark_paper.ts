@@ -712,11 +712,16 @@ Output ONLY a JSON array (no markdown fences, no extra text):
 [{"label":"A","correctness":N,"completeness":N,"edgeCases":N,"codeQuality":N,"readability":N,"total":N,"risk_fail_prob":0.X,"justification":"..."},...]`;
 }
 
+/**
+ * Build the R2 debate prompt for divergent candidates.
+ * Note: no blind parameter needed — the debate prompt shows R1 scores
+ * and justifications (not raw code or exec status), so there is no
+ * information leakage regardless of blind/informed mode.
+ */
 function buildDebatePrompt(
     taskPrompt: string,
     round1Results: { judge: string; scores: Record<string, QualityScores> }[],
     divergentLabels: string[],
-    blind: boolean = true,
 ): string {
     const r1Section = round1Results.map(r =>
         `### ${r.judge}\n${divergentLabels.map(l =>
@@ -969,7 +974,7 @@ async function evaluateWithPanel(
     const divergentConfigNames = divergentLabels.map(l => `${l}(${CONFIG_SHORT[labelMap.get(l)!]})`);
     process.stdout.write(`[DEBATE:${triggerType} ${divergentConfigNames.join(',')}] `);
 
-    const debatePrompt = buildDebatePrompt(taskPrompt, round1Valid, divergentLabels, blind);
+    const debatePrompt = buildDebatePrompt(taskPrompt, round1Valid, divergentLabels);
     const debateMessages: { judge: string; argument: string }[] = [];
 
     const round2Results = await Promise.all(
@@ -2336,6 +2341,22 @@ async function main(): Promise<void> {
 
     deleteCheckpoint();
     console.log(`  Checkpoint cleared (benchmark complete).\n`);
+}
+
+
+// ═══ Test exports (stripped from VSIX by .vscodeignore) ═══
+if (typeof module !== 'undefined') {
+    module.exports = {
+        extractPythonCode,
+        passAtK,
+        logBinom,
+        computeStdDev,
+        parseScores,
+        detectDivergence,
+        spearmanCorrelation,
+        cohensKappa,
+        mcNemar,
+    };
 }
 
 main().catch(err => {
