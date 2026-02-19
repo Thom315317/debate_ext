@@ -1,14 +1,26 @@
 # DEBATE EXT — VS Code Extension
 
-AI debate orchestrator: Claude + OpenAI collaborate via API keys to produce robust code.
+AI debate orchestrator: two LLM generators collaborate via structured debate, evaluated by frontier judges.
+
+## Features
+
+- **Multi-Agent Debate:** Orchestrates collaboration between two generators (solo, lead, orch, selfrefine modes).
+- **3-Level Judge Protocol:** R1 (independent) → R2 (debate on divergence) → Tie-breaker (Gemini).
+- **Paper-Grade Benchmark:** MBPP+ 378 tasks, pass@k, McNemar, Spearman, Cohen's kappa.
+- **VS Code Integration:** Native chat panel, diff previews, and workspace context awareness.
+
+## Prerequisites
+
+- **Node.js**: v16 or higher.
+- **Python 3.8+**: Required for benchmark data setup.
 
 ## Development
 
 ```bash
 npm install
-npm run watch     # auto-compile on save
 npm run compile   # one-time compile
 npm run smoke     # smoke tests (build + security)
+npm test          # unit tests
 ```
 
 Press **F5** in VS Code to launch the Extension Development Host.
@@ -26,9 +38,9 @@ Press **F5** in VS Code to launch the Extension Development Host.
 | `patchApplier.ts` | Diff extraction, parsing, preview, WorkspaceEdit apply |
 | `chatPanel.ts` | Webview sidebar panel for chat UI |
 | `logger.ts` | Output channel logging + persistent run logs |
-| `benchmark.ts` | Benchmark v1 — 100 cases, 9 categories, 8 configs |
-| `benchmark_v2.ts` | Benchmark v2 — HumanEval 164 problems + code execution |
-| `benchmark_paper.ts` | Benchmark v3 — MBPP+ paper-grade (pass@k, variance, cost-efficiency) |
+| `benchmark_paper.ts` | **Paper benchmark** — MBPP+ 378 tasks, 8 configs, blind judges, EvalPlus+ |
+| `benchmark.ts` | *(deprecated)* v1 benchmark with hardcoded tasks |
+| `benchmark_v2.ts` | *(deprecated)* v2 benchmark using HumanEval |
 
 ## Commands
 
@@ -47,24 +59,19 @@ Press **F5** in VS Code to launch the Extension Development Host.
 ## Benchmark Usage
 
 ```bash
-# v1 — 100 hand-crafted cases
-npm run benchmark -- --help
-npm run benchmark -- --dry-run
-npm run benchmark -- --cases algo-fibonacci --configs gen1-solo,gen2-solo
-
-# v2 — HumanEval + execution
-npm run bench2 -- --help
-npm run bench2 -- --dry-run --limit 5
-npm run bench2 -- --limit 10 --runs 1 --configs gen1-solo,gen2-solo
-
-# v3 — MBPP+ Paper-Grade Benchmark
+# Paper-Grade Benchmark (MBPP+)
 npm run bench:mbppplus -- --help
 npm run bench:mbppplus -- --dry-run --limit 5
 npm run bench:mbppplus -- --limit 30 --runs 3
-
-# Requires: python scripts/setup_mbppplus.py first (needs evalplus or datasets).
+npm run bench:mbppplus -- --resume              # resume from checkpoint
 ```
 
-Key flags: `--dry-run`, `--seed N`, `--configs`, `--judge-threshold N`,
-`--gen1-model`, `--gen2-model`, `--claude-judge-model`, `--openai-judge-model`,
-`--tiebreaker-model`.
+Key flags: `--dry-run`, `--resume`, `--seed N`, `--limit N`, `--runs N`,
+`--configs`, `--judge-threshold N`, `--gen1-model`, `--gen2-model`,
+`--claude-judge-model`, `--openai-judge-model`, `--tiebreaker-model`.
+
+Data setup (requires Python):
+```bash
+pip install evalplus datasets
+python scripts/setup_mbppplus.py
+```
