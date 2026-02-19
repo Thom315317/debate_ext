@@ -2,7 +2,7 @@
   "name": "cristal-code",
   "displayName": "CRISTAL CODE",
   "description": "AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "publisher": "JDFRNX54",
   "icon": "media/icon.png",
   "engines": {

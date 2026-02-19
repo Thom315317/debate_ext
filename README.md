@@ -1,4 +1,6 @@
-# CRISTAL CODE
+# CRISTAL CODE v1.0
+
+> **debate_ext v1.0** — Multi-agent code generation & evaluation framework
 
 AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code.
 Includes a paper-grade benchmark suite that evaluates inter-LLM collaboration quality.
