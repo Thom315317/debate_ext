@@ -7,3 +7,4 @@ benchmark-results/
 *.vsix
 *.zip
 **/.vscode/
+vscode-extension/data/*.jsonl
