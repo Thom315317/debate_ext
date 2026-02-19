@@ -6,3 +6,4 @@
 benchmark-results/
 *.vsix
 *.zip
+**/.vscode/

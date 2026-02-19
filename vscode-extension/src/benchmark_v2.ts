@@ -1,5 +1,11 @@
 #!/usr/bin/env node
 /**
+ * @deprecated Use benchmark_paper.ts instead.
+ * This file is the v2 benchmark using HumanEval (164 tasks).
+ * Superseded by benchmark_paper.ts which uses MBPP+ (378 tasks)
+ * with blind judges, EvalPlus+, and full paper metrics.
+ */
+/**
  * DEBATE EXT — Benchmark v2 (HumanEval + Execution + Judge Debate)
  *
  * Generators (mid-tier, via Ollama):

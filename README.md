@@ -105,6 +105,20 @@ Every evaluation produces a full `judgeAudit` with three score snapshots:
 - **Streaming output**: real-time display of LLM generation with ANSI colors per agent
 - **Think detection**: dims `<think>`/`<thinking>` blocks, bolds code blocks
 
+
+#### Code Execution Warning
+
+Generated code is executed directly via `python3 -c` on the host machine.
+**No sandboxing is applied** (no Docker, firejail, or cgroup limits).
+
+For MBPP+ tasks (pure functions with assert-based tests), the risk is minimal.
+However, for safety:
+- Run benchmarks in a dedicated VM or container
+- Do not run with elevated privileges
+- Review generated code samples if running on sensitive systems
+
+A `--sandbox docker` option is planned for a future release.
+
 #### Paper Metrics
 
 The final report includes:

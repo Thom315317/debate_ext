@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 /**
+ * @deprecated Use benchmark_paper.ts instead.
+ * This file is the original benchmark with hardcoded tasks (no MBPP+).
+ * Kept for reference only — not used in the paper evaluation.
+ */
+/**
  * DEBATE EXT — Benchmark (8 configurations)
  *
  * Generators (mid-tier, via Ollama):

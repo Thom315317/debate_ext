@@ -11,6 +11,5 @@ scripts/**
 .debate_memory/**
 tools/**
 data/**
-analyze_bench.py
 .env
 .env.example
