@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CRISTAL CODE — Benchmark v2 (HumanEval + Execution + Judge Debate)
+ * DEBATE EXT — Benchmark v2 (HumanEval + Execution + Judge Debate)
  *
  * Generators (mid-tier, via Ollama):
  *   gen1 = Qwen3-Coder 480B    gen2 = MiniMax M2
@@ -950,7 +950,7 @@ function parseArgs(): Args {
         else if (args[i] === '--resume') resume = true;
         else if (args[i] === '--dry-run') dryRun = true;
         else if (args[i] === '--help') {
-            console.log(`CRISTAL CODE Benchmark v2 — HumanEval + Execution + Judge Debate\n`);
+            console.log(`DEBATE EXT Benchmark v2 — HumanEval + Execution + Judge Debate\n`);
             console.log(`Options:`);
             console.log(`  --configs c1,c2             Select configs (default: all 8)`);
             console.log(`  --limit N                   Max tasks to run (default: 164 = all)`);
@@ -1006,7 +1006,7 @@ async function main(): Promise<void> {
     const selectedTasks = allTasks.slice(0, opts.limit);
 
     console.log('╔══════════════════════════════════════════════════════════════════════╗');
-    console.log('║  CRISTAL CODE — Benchmark v2                                        ║');
+    console.log('║  DEBATE EXT — Benchmark v2                                        ║');
     console.log('║  HumanEval + Code Execution + 2-Judge Debate + Tie-breaker          ║');
     if (opts.dryRun) {
     console.log('║  ⚡ DRY-RUN MODE — mock scores, no API calls                        ║');

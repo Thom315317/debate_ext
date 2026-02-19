@@ -28,29 +28,29 @@ export function setSecretStorage(secrets: vscode.SecretStorage): void {
 // ─── Anthropic API key ───────────────────────────────────────────────
 
 export async function getAnthropicKey(): Promise<string | undefined> {
-    return _secrets?.get('cristalCode.anthropicApiKey');
+    return _secrets?.get('debateExt.anthropicApiKey');
 }
 
 export async function setAnthropicKey(key: string): Promise<void> {
-    await _secrets?.store('cristalCode.anthropicApiKey', key);
+    await _secrets?.store('debateExt.anthropicApiKey', key);
 }
 
 export async function deleteAnthropicKey(): Promise<void> {
-    await _secrets?.delete('cristalCode.anthropicApiKey');
+    await _secrets?.delete('debateExt.anthropicApiKey');
 }
 
 // ─── OpenAI API key ─────────────────────────────────────────────────
 
 export async function getOpenAIKey(): Promise<string | undefined> {
-    return _secrets?.get('cristalCode.openaiApiKey');
+    return _secrets?.get('debateExt.openaiApiKey');
 }
 
 export async function setOpenAIKey(key: string): Promise<void> {
-    await _secrets?.store('cristalCode.openaiApiKey', key);
+    await _secrets?.store('debateExt.openaiApiKey', key);
 }
 
 export async function deleteOpenAIKey(): Promise<void> {
-    await _secrets?.delete('cristalCode.openaiApiKey');
+    await _secrets?.delete('debateExt.openaiApiKey');
 }
 
 // ─── CLI runner (for test commands only) ─────────────────────────────
@@ -112,11 +112,11 @@ export function runCommand(
 // ─── Claude API (direct HTTPS) ──────────────────────────────────────
 
 function getClaudeModel(): string {
-    return vscode.workspace.getConfiguration('cristalCode').get<string>('claudeModel', 'claude-opus-4-6');
+    return vscode.workspace.getConfiguration('debateExt').get<string>('claudeModel', 'claude-opus-4-6');
 }
 
 function getClaudeTimeout(): number {
-    return vscode.workspace.getConfiguration('cristalCode').get<number>('claudeTimeout', 300_000);
+    return vscode.workspace.getConfiguration('debateExt').get<number>('claudeTimeout', 300_000);
 }
 
 export async function callClaude(prompt: string): Promise<CliResult> {
@@ -189,11 +189,11 @@ export async function callClaude(prompt: string): Promise<CliResult> {
 // ─── OpenAI API (direct HTTPS) ──────────────────────────────────────
 
 function getOpenAIModel(): string {
-    return vscode.workspace.getConfiguration('cristalCode').get<string>('openaiModel', 'gpt-5.1');
+    return vscode.workspace.getConfiguration('debateExt').get<string>('openaiModel', 'gpt-5.1');
 }
 
 function getOpenAITimeout(): number {
-    return vscode.workspace.getConfiguration('cristalCode').get<number>('openaiTimeout', 300_000);
+    return vscode.workspace.getConfiguration('debateExt').get<number>('openaiTimeout', 300_000);
 }
 
 export async function callOpenAI(prompt: string): Promise<CliResult> {
@@ -262,7 +262,7 @@ export async function callOpenAI(prompt: string): Promise<CliResult> {
 // ─── Test runner ─────────────────────────────────────────────────────
 
 export async function runTests(cwd: string): Promise<CliResult | null> {
-    const config = vscode.workspace.getConfiguration('cristalCode');
+    const config = vscode.workspace.getConfiguration('debateExt');
     const testCmd = config.get<string>('testCommand', '').trim();
     if (!testCmd) {
         return null;

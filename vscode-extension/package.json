@@ -1,9 +1,9 @@
 {
-  "name": "cristal-code",
-  "displayName": "CRISTAL CODE",
+  "name": "debate-ext",
+  "displayName": "DEBATE EXT",
   "description": "AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code",
   "version": "1.0.0",
-  "publisher": "JDFRNX54",
+  "publisher": "debate-ext",
   "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.85.0"
@@ -19,121 +19,121 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "cristal-code",
-          "title": "CRISTAL CODE",
+          "id": "debate-ext",
+          "title": "DEBATE EXT",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "cristal-code": [
+      "debate-ext": [
         {
           "type": "webview",
-          "id": "cristalCode.chatView",
+          "id": "debateExt.chatView",
           "name": "Chat"
         }
       ]
     },
     "commands": [
       {
-        "command": "cristalCode.runDebate",
-        "title": "CRISTAL CODE: Run Debate (auto)",
+        "command": "debateExt.runDebate",
+        "title": "DEBATE EXT: Run Debate (auto)",
         "icon": "$(play)"
       },
       {
-        "command": "cristalCode.runSimple",
-        "title": "CRISTAL CODE: Run Simple"
+        "command": "debateExt.runSimple",
+        "title": "DEBATE EXT: Run Simple"
       },
       {
-        "command": "cristalCode.runComplex",
-        "title": "CRISTAL CODE: Run Complex"
+        "command": "debateExt.runComplex",
+        "title": "DEBATE EXT: Run Complex"
       },
       {
-        "command": "cristalCode.showLogs",
-        "title": "CRISTAL CODE: Show Logs",
+        "command": "debateExt.showLogs",
+        "title": "DEBATE EXT: Show Logs",
         "icon": "$(output)"
       },
       {
-        "command": "cristalCode.configureCLIs",
-        "title": "CRISTAL CODE: Configuration",
+        "command": "debateExt.configureCLIs",
+        "title": "DEBATE EXT: Configuration",
         "icon": "$(gear)"
       },
       {
-        "command": "cristalCode.configureOpenAIKey",
-        "title": "CRISTAL CODE: Configure OpenAI Key",
+        "command": "debateExt.configureOpenAIKey",
+        "title": "DEBATE EXT: Configure OpenAI Key",
         "icon": "$(key)"
       },
       {
-        "command": "cristalCode.configureAnthropicKey",
-        "title": "CRISTAL CODE: Configure Anthropic Key",
+        "command": "debateExt.configureAnthropicKey",
+        "title": "DEBATE EXT: Configure Anthropic Key",
         "icon": "$(key)"
       },
       {
-        "command": "cristalCode.clearChat",
-        "title": "CRISTAL CODE: Clear Chat",
+        "command": "debateExt.clearChat",
+        "title": "DEBATE EXT: Clear Chat",
         "icon": "$(clear-all)"
       },
       {
-        "command": "cristalCode.stopDebate",
-        "title": "CRISTAL CODE: Stop Debate",
+        "command": "debateExt.stopDebate",
+        "title": "DEBATE EXT: Stop Debate",
         "icon": "$(debug-stop)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "cristalCode.runDebate",
-          "when": "view == cristalCode.chatView",
+          "command": "debateExt.runDebate",
+          "when": "view == debateExt.chatView",
           "group": "navigation@1"
         },
         {
-          "command": "cristalCode.stopDebate",
-          "when": "view == cristalCode.chatView",
+          "command": "debateExt.stopDebate",
+          "when": "view == debateExt.chatView",
           "group": "navigation@2"
         },
         {
-          "command": "cristalCode.clearChat",
-          "when": "view == cristalCode.chatView",
+          "command": "debateExt.clearChat",
+          "when": "view == debateExt.chatView",
           "group": "navigation@3"
         },
         {
-          "command": "cristalCode.configureCLIs",
-          "when": "view == cristalCode.chatView",
+          "command": "debateExt.configureCLIs",
+          "when": "view == debateExt.chatView",
           "group": "navigation@4"
         }
       ]
     },
     "configuration": {
-      "title": "CRISTAL CODE",
+      "title": "DEBATE EXT",
       "properties": {
-        "cristalCode.claudeModel": {
+        "debateExt.claudeModel": {
           "type": "string",
           "default": "claude-sonnet-4-20250514",
           "enum": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-5-20241022"],
           "description": "Claude model to use (Anthropic API)"
         },
-        "cristalCode.claudeTimeout": {
+        "debateExt.claudeTimeout": {
           "type": "number",
           "default": 300000,
           "description": "Timeout for Claude API calls in milliseconds"
         },
-        "cristalCode.openaiModel": {
+        "debateExt.openaiModel": {
           "type": "string",
           "default": "gpt-4o",
           "enum": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini", "o3-mini"],
           "description": "OpenAI model to use for the consultant"
         },
-        "cristalCode.openaiTimeout": {
+        "debateExt.openaiTimeout": {
           "type": "number",
           "default": 300000,
           "description": "Timeout for OpenAI API calls in milliseconds"
         },
-        "cristalCode.testCommand": {
+        "debateExt.testCommand": {
           "type": "string",
           "default": "",
           "description": "Optional test command to run between iterations (e.g., pytest -q, npm test)"
         },
-        "cristalCode.pythonPath": {
+        "debateExt.pythonPath": {
           "type": "string",
           "default": "",
           "description": "Path to the Python venv for auxiliary scripts (auto-detected if empty)"

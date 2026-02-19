@@ -5,14 +5,14 @@ import { callClaude, callOpenAI, runTests } from './cliRunner';
 import { buildReviewPrompt, parseConsensus, buildCorrectionPrompt, ConsensusKo } from './consensus';
 import { extractDiff, parseDiff, previewAndConfirm, applyPatch, fallbackPythonPatch } from './patchApplier';
 import { log, logError, persistRunLog, appendJsonl } from './logger';
-import { CristalChatProvider } from './chatPanel';
+import { DebateChatProvider } from './chatPanel';
 
 /**
  * Run a debate driven from the sidebar chat panel.
  * All progress is shown as chat messages.
  */
 export async function runDebateFromChat(
-    chat: CristalChatProvider,
+    chat: DebateChatProvider,
     prompt: string,
     forceMode?: DebateMode
 ): Promise<void> {
@@ -28,7 +28,7 @@ export async function runDebateFromChat(
     chat.setStatus('Starting...', true);
 
     const runId = `run_${Date.now()}`;
-    const runLog: string[] = [`=== CRISTAL CODE Run ${runId} ===`, `Prompt: ${prompt}`, ''];
+    const runLog: string[] = [`=== DEBATE EXT Run ${runId} ===`, `Prompt: ${prompt}`, ''];
 
     try {
         // --- Collect context ---
@@ -260,7 +260,7 @@ function buildClaudePrompt(userPrompt: string, contextPrompt: string): string {
 async function maybeRunTests(
     workspaceRoot: string,
     runLog: string[],
-    chat: CristalChatProvider
+    chat: DebateChatProvider
 ): Promise<'ok' | 'fail' | 'skip' | 'escalate'> {
     const testResult = await runTests(workspaceRoot);
     if (!testResult) {

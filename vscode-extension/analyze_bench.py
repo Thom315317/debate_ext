@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CRISTAL CODE — Benchmark Analysis & Paper-Ready Figures
+DEBATE EXT — Benchmark Analysis & Paper-Ready Figures
 
 Reads the JSON report produced by benchmark.ts and generates:
   1. Statistical tests (Wilcoxon signed-rank between config pairs)
@@ -315,7 +315,7 @@ def chart_judge_agreement(jdf, out_dir):
 def table_summary_md(df, wilcox_df, out_dir):
     """Generate paper-ready Markdown tables."""
     active = [c for c in CONFIGS if c in df.columns and df[c].notna().any()]
-    lines = ['# CRISTAL CODE — Benchmark Results\n']
+    lines = ['# DEBATE EXT — Benchmark Results\n']
 
     # Overall summary
     lines.append('## Overall Quality Scores (avg of 3 judges)\n')

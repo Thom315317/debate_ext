@@ -1,4 +1,4 @@
-# CRISTAL CODE — VS Code Extension
+# DEBATE EXT — VS Code Extension
 
 AI debate orchestrator: Claude + OpenAI collaborate via API keys to produce robust code.
 
@@ -34,15 +34,15 @@ Press **F5** in VS Code to launch the Extension Development Host.
 
 | ID | Title |
 |----|-------|
-| `cristalCode.runDebate` | CRISTAL CODE: Run Debate (auto) |
-| `cristalCode.runSimple` | CRISTAL CODE: Run Simple |
-| `cristalCode.runComplex` | CRISTAL CODE: Run Complex |
-| `cristalCode.stopDebate` | CRISTAL CODE: Stop Debate |
-| `cristalCode.clearChat` | CRISTAL CODE: Clear Chat |
-| `cristalCode.configureCLIs` | CRISTAL CODE: Configuration |
-| `cristalCode.configureAnthropicKey` | CRISTAL CODE: Configure Anthropic Key |
-| `cristalCode.configureOpenAIKey` | CRISTAL CODE: Configure OpenAI Key |
-| `cristalCode.showLogs` | CRISTAL CODE: Show Logs |
+| `debateExt.runDebate` | DEBATE EXT: Run Debate (auto) |
+| `debateExt.runSimple` | DEBATE EXT: Run Simple |
+| `debateExt.runComplex` | DEBATE EXT: Run Complex |
+| `debateExt.stopDebate` | DEBATE EXT: Stop Debate |
+| `debateExt.clearChat` | DEBATE EXT: Clear Chat |
+| `debateExt.configureCLIs` | DEBATE EXT: Configuration |
+| `debateExt.configureAnthropicKey` | DEBATE EXT: Configure Anthropic Key |
+| `debateExt.configureOpenAIKey` | DEBATE EXT: Configure OpenAI Key |
+| `debateExt.showLogs` | DEBATE EXT: Show Logs |
 
 ## Benchmark Usage
 

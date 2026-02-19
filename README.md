@@ -1,4 +1,4 @@
-# CRISTAL CODE v1.0
+# DEBATE EXT v1.0
 
 > **debate_ext v1.0** — Multi-agent code generation & evaluation framework
 
@@ -219,12 +219,12 @@ The final JSON report contains:
 
 | Command | Description |
 |---------|-------------|
-| `CRISTAL CODE: Run Debate` | Auto-detect mode and run debate |
-| `CRISTAL CODE: Run Simple` | Force simple mode (single pass) |
-| `CRISTAL CODE: Run Complex` | Force complex mode (full debate) |
-| `CRISTAL CODE: Stop Debate` | Stop the current debate |
-| `CRISTAL CODE: Clear Chat` | Clear chat history |
-| `CRISTAL CODE: Configuration` | Configure models and settings |
+| `DEBATE EXT: Run Debate` | Auto-detect mode and run debate |
+| `DEBATE EXT: Run Simple` | Force simple mode (single pass) |
+| `DEBATE EXT: Run Complex` | Force complex mode (full debate) |
+| `DEBATE EXT: Stop Debate` | Stop the current debate |
+| `DEBATE EXT: Clear Chat` | Clear chat history |
+| `DEBATE EXT: Configuration` | Configure models and settings |
 
 ## Security
 

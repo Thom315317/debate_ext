@@ -1,6 +1,6 @@
 .env
 .debate_memory/
-tools/.venv/
+**/.venv/
 **/node_modules/
 **/out/
 benchmark-results/
