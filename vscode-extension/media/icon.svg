@@ -1,10 +1,48 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Crystal / diamond shape -->
-  <polygon points="12,2 22,9 12,22 2,9" fill="none" stroke="currentColor" stroke-width="1.5"/>
-  <!-- Inner facets -->
-  <line x1="2" y1="9" x2="22" y2="9"/>
-  <line x1="12" y1="2" x2="7" y2="9"/>
-  <line x1="12" y1="2" x2="17" y2="9"/>
-  <line x1="7" y1="9" x2="12" y2="22"/>
-  <line x1="17" y1="9" x2="12" y2="22"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <radialGradient id="bg_glow" cx="50%" cy="45%" r="45%">
+      <stop offset="0%" stop-color="#2a2a4e"/>
+      <stop offset="100%" stop-color="#1a1a2e"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#bg_glow)" stroke="#e94560" stroke-width="1.5"/>
+
+  <!-- Masks centered -->
+  <g transform="translate(64,64) scale(0.68) translate(-97,-65)">
+
+    <!-- Comedy mask (happy) - slightly left and behind -->
+    <g transform="translate(38, 18) scale(0.90)">
+      <path d="M40,5 C15,5 5,20 5,42 C5,68 20,88 40,95 C60,88 75,68 75,42 C75,20 65,5 40,5Z"
+            fill="#f0ece4" stroke="#ddd5c8" stroke-width="1.5"/>
+      <ellipse cx="25" cy="38" rx="9" ry="7" fill="#1a1a2e" stroke="#c8c0b4" stroke-width="1"/>
+      <ellipse cx="55" cy="38" rx="9" ry="7" fill="#1a1a2e" stroke="#c8c0b4" stroke-width="1"/>
+      <path d="M15,52 Q22,48 28,52" fill="none" stroke="#c8c0b4" stroke-width="1.2" stroke-linecap="round"/>
+      <path d="M52,52 Q58,48 65,52" fill="none" stroke="#c8c0b4" stroke-width="1.2" stroke-linecap="round"/>
+      <path d="M18,60 Q28,78 40,80 Q52,78 62,60" fill="#1a1a2e" stroke="#c8c0b4" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M18,60 Q40,55 62,60" fill="none" stroke="#c8c0b4" stroke-width="1" stroke-linecap="round"/>
+      <path d="M14,28 Q20,18 32,24" fill="none" stroke="#c8c0b4" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M48,24 Q60,18 66,28" fill="none" stroke="#c8c0b4" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M38,48 Q40,54 42,48" fill="none" stroke="#c8c0b4" stroke-width="1" stroke-linecap="round"/>
+    </g>
+
+    <!-- Tragedy mask (sad) - slightly right and in front -->
+    <g transform="translate(84, 22) scale(0.90)">
+      <path d="M40,5 C15,5 5,20 5,42 C5,68 20,88 40,95 C60,88 75,68 75,42 C75,20 65,5 40,5Z"
+            fill="#faf6f0" stroke="#e0d8cc" stroke-width="1.5"/>
+      <ellipse cx="25" cy="36" rx="9" ry="8" fill="#1a1a2e" stroke="#c8c0b4" stroke-width="1"/>
+      <ellipse cx="55" cy="36" rx="9" ry="8" fill="#1a1a2e" stroke="#c8c0b4" stroke-width="1"/>
+      <path d="M14,24 Q22,20 32,26" fill="none" stroke="#c8c0b4" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M48,26 Q58,20 66,24" fill="none" stroke="#c8c0b4" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M36,22 L38,28" fill="none" stroke="#d0c8bc" stroke-width="0.8" stroke-linecap="round"/>
+      <path d="M44,22 L42,28" fill="none" stroke="#d0c8bc" stroke-width="0.8" stroke-linecap="round"/>
+      <path d="M38,46 Q40,52 42,46" fill="none" stroke="#c8c0b4" stroke-width="1" stroke-linecap="round"/>
+      <path d="M18,68 Q28,56 40,54 Q52,56 62,68" fill="#1a1a2e" stroke="#c8c0b4" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M22,70 Q40,76 58,70" fill="none" stroke="#c8c0b4" stroke-width="1" stroke-linecap="round"/>
+      <path d="M28,48 Q24,58 20,66" fill="none" stroke="#d0c8bc" stroke-width="0.8" stroke-linecap="round"/>
+      <path d="M52,48 Q56,58 60,66" fill="none" stroke="#d0c8bc" stroke-width="0.8" stroke-linecap="round"/>
+    </g>
+
+  </g>
 </svg>

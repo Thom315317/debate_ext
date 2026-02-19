@@ -10,7 +10,7 @@
   <circle cx="100" cy="100" r="95" fill="url(#bg_glow)" stroke="#e94560" stroke-width="2"/>
 
   <!-- Ensemble masques + texte, réduit et recentré -->
-  <g transform="translate(100,100) scale(0.88) translate(-97,-77)">
+  <g transform="translate(100,96) scale(0.88) translate(-97,-77)">
 
     <!-- Comedy mask (happy) - slightly left and behind -->
     <g transform="translate(38, 18) scale(0.90)">
