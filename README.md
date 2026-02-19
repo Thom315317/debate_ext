@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="vscode-extension/media/logo_debate_ext.svg" alt="Debate Ext Logo" width="160"/>
+</p>
+
 # DEBATE EXT v1.0
 
 > **debate_ext v1.0** — Multi-agent code generation & evaluation framework
