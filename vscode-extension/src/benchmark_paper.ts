@@ -1553,6 +1553,7 @@ interface Args {
     merge: string | null;
     offset: number;
     checkpointFile: string | null;
+    dataset: string;
 }
 
 function parseArgs(): Args {
@@ -1578,6 +1579,7 @@ function parseArgs(): Args {
     let merge: string | null = null;
     let offset = 0;
     let checkpointFile: string | null = null;
+    let dataset = 'mbpp';
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--configs' && args[i + 1]) configs = args[++i].split(',') as BenchConfig[];
@@ -1601,6 +1603,7 @@ function parseArgs(): Args {
         else if (args[i] === '--merge' && args[i + 1]) merge = args[++i];
         else if (args[i] === '--offset' && args[i + 1]) offset = parseInt(args[++i], 10);
         else if (args[i] === '--checkpoint-file' && args[i + 1]) checkpointFile = args[++i];
+        else if (args[i] === '--dataset' && args[i + 1]) dataset = args[++i];
         else if (args[i] === '--help') {
             console.log(`DEBATE EXT — Paper-Grade Benchmark (MBPP+ / EvalPlus)\n`);
             console.log(`Generates code with 8 collaboration configs, executes tests,`);
@@ -1627,6 +1630,7 @@ function parseArgs(): Args {
             console.log(`  --merge <p1.json,p2.json>    Merge multiple reports (dedup by run+taskId)`);
             console.log(`  --offset N                   Skip first N tasks (default: 0)`);
         console.log(`  --checkpoint-file <path>     Custom checkpoint file (for parallel runs)`);
+        console.log(`  --dataset mbpp|humaneval     Dataset to use (default: mbpp)`);
             console.log(`\nData setup:`);
             console.log(`  python scripts/setup_mbppplus.py    # creates data/MbppPlus.jsonl`);
             process.exit(0);
@@ -1638,7 +1642,7 @@ function parseArgs(): Args {
         configs, limit, runs, maxIter, timeout,
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
         tiebreakerModel, tau, seed, tasks, resume, dryRun, judgeBlind, noDebate,
-        rejudgeFrom, merge, offset, checkpointFile,
+        rejudgeFrom, merge, offset, checkpointFile, dataset,
     };
 }
 
@@ -1880,7 +1884,12 @@ async function main(): Promise<void> {
     _rng = mulberry32(opts.seed);
 
     // Load MBPP+
-    const dataPath = path.join(__dirname, '..', 'data', 'MbppPlus.jsonl');
+    const dataFile = opts.dataset === 'humaneval' ? 'HumanEvalPlus.jsonl' : 'MbppPlus.jsonl';
+    const dataPath = path.join(__dirname, '..', 'data', dataFile);
+    // Auto-separate checkpoint per dataset (prevents cross-contamination)
+    if (!opts.checkpointFile && opts.dataset === 'humaneval') {
+        CHECKPOINT_PATH = path.join(process.cwd(), 'benchmark-results', 'checkpoint_paper_humaneval.json');
+    }
     let allTasks: MbppPlusTask[];
 
     if (fs.existsSync(dataPath)) {
@@ -1919,7 +1928,7 @@ async function main(): Promise<void> {
     const hasOpenAI = !!process.env.OPENAI_API_KEY;
     const hasGemini = !!process.env.GEMINI_API_KEY;
 
-    console.log(`  Dataset     : MBPP+ (EvalPlus)`);
+    console.log(`  Dataset     : ${opts.dataset === 'humaneval' ? 'HumanEval+ (EvalPlus)' : 'MBPP+ (EvalPlus)'}`);
     console.log(`  Generator 1 : ${opts.gen1Model} (Ollama)`);
     console.log(`  Generator 2 : ${opts.gen2Model} (Ollama)`);
     console.log(`  Judge 1     : ${opts.claudeJudgeModel} (Anthropic) ${hasAnthropic ? 'OK' : 'MISSING'}`);
@@ -2312,7 +2321,7 @@ async function main(): Promise<void> {
     const report: PaperReport = {
         meta: {
             date: new Date().toISOString(),
-            dataset: 'MBPP+ (EvalPlus)',
+            dataset: opts.dataset === 'humaneval' ? 'HumanEval+ (EvalPlus)' : 'MBPP+ (EvalPlus)',
             gen1Model: opts.gen1Model,
             gen2Model: opts.gen2Model,
             claudeJudgeModel: opts.claudeJudgeModel,

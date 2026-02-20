@@ -17,7 +17,7 @@ Includes a paper-grade benchmark suite that evaluates inter-LLM collaboration qu
 debate_ext/
   vscode-extension/    ← VS Code extension (TypeScript)
     src/               ← Extension source + benchmark suites
-    scripts/           ← smoke.js, setup_mbppplus.py
+    scripts/           ← smoke.js, setup_mbppplus.py, setup_humanevalplus.py
     data/              ← MbppPlus.jsonl (378 MBPP+ tasks)
   tools/               ← Python auxiliary scripts
   scripts/             ← Root-level scripts
@@ -172,6 +172,7 @@ cd vscode-extension
 python3 -m venv .venv && source .venv/bin/activate
 pip install evalplus
 python3 scripts/setup_mbppplus.py    # creates data/MbppPlus.jsonl (378 tasks)
+python3 scripts/setup_humanevalplus.py  # creates data/HumanEvalPlus.jsonl (164 tasks)
 ```
 
 ### Run Paper Benchmark
@@ -197,6 +198,12 @@ node out/benchmark_paper.js --tasks Mbpp/2,Mbpp/3 --runs 1
 
 # Skip first N tasks
 node out/benchmark_paper.js --limit 378 --runs 3 --offset 100
+
+# Run on HumanEval+ instead of MBPP+
+node out/benchmark_paper.js --dataset humaneval --limit 164 --runs 3
+
+# Custom checkpoint file (for parallel runs)
+node out/benchmark_paper.js --limit 378 --runs 3 --checkpoint-file my_checkpoint.json
 
 # Ablation: disable debate (R1 scores only)
 node out/benchmark_paper.js --limit 378 --runs 3 --no-debate

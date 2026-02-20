@@ -67,12 +67,13 @@ npm run bench:mbppplus -- --resume              # resume from checkpoint
 ```
 
 Key flags: `--dry-run`, `--resume`, `--seed N`, `--limit N`, `--runs N`,
-`--configs`, `--judge-threshold N`, `--checkpoint-file <path>`,
+`--configs`, `--judge-threshold N`, `--checkpoint-file <path>`, `--dataset mbpp|humaneval`,
 `--gen1-model`, `--gen2-model`,
 `--claude-judge-model`, `--openai-judge-model`, `--tiebreaker-model`.
 
 Data setup (requires Python):
 ```bash
 pip install evalplus datasets
-python scripts/setup_mbppplus.py
+python scripts/setup_mbppplus.py      # MBPP+ (378 tasks)
+python scripts/setup_humanevalplus.py  # HumanEval+ (164 tasks)
 ```
