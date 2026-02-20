@@ -67,7 +67,8 @@ npm run bench:mbppplus -- --resume              # resume from checkpoint
 ```
 
 Key flags: `--dry-run`, `--resume`, `--seed N`, `--limit N`, `--runs N`,
-`--configs`, `--judge-threshold N`, `--gen1-model`, `--gen2-model`,
+`--configs`, `--judge-threshold N`, `--checkpoint-file <path>`,
+`--gen1-model`, `--gen2-model`,
 `--claude-judge-model`, `--openai-judge-model`, `--tiebreaker-model`.
 
 Data setup (requires Python):
