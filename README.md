@@ -1,5 +1,7 @@
 <p align="center">
   <img src="vscode-extension/media/logo_debate_ext.svg" alt="Debate Ext Logo" width="160"/>
+  <br/>
+  <a href="https://doi.org/10.5281/zenodo.18704886"><img src="https://zenodo.org/badge/1162069048.svg" alt="DOI"></a>
 </p>
 
 # DEBATE EXT v1.0
