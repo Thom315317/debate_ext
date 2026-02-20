@@ -1468,7 +1468,7 @@ interface CheckpointData {
     lastSaved: string;
 }
 
-const CHECKPOINT_PATH = path.join(process.cwd(), 'benchmark-results', 'checkpoint_paper.json');
+let CHECKPOINT_PATH = path.join(process.cwd(), 'benchmark-results', 'checkpoint_paper.json');
 
 function makeFingerprint(opts: Args, taskCount: number): string {
     return JSON.stringify({
@@ -1552,6 +1552,7 @@ interface Args {
     rejudgeFrom: string | null;
     merge: string | null;
     offset: number;
+    checkpointFile: string | null;
 }
 
 function parseArgs(): Args {
@@ -1576,6 +1577,7 @@ function parseArgs(): Args {
     let rejudgeFrom: string | null = null;
     let merge: string | null = null;
     let offset = 0;
+    let checkpointFile: string | null = null;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--configs' && args[i + 1]) configs = args[++i].split(',') as BenchConfig[];
@@ -1598,6 +1600,7 @@ function parseArgs(): Args {
         else if (args[i] === '--rejudge-from' && args[i + 1]) rejudgeFrom = args[++i];
         else if (args[i] === '--merge' && args[i + 1]) merge = args[++i];
         else if (args[i] === '--offset' && args[i + 1]) offset = parseInt(args[++i], 10);
+        else if (args[i] === '--checkpoint-file' && args[i + 1]) checkpointFile = args[++i];
         else if (args[i] === '--help') {
             console.log(`DEBATE EXT — Paper-Grade Benchmark (MBPP+ / EvalPlus)\n`);
             console.log(`Generates code with 8 collaboration configs, executes tests,`);
@@ -1623,6 +1626,7 @@ function parseArgs(): Args {
             console.log(`  --rejudge-from <path.json>   Re-judge from existing report (new judge settings)`);
             console.log(`  --merge <p1.json,p2.json>    Merge multiple reports (dedup by run+taskId)`);
             console.log(`  --offset N                   Skip first N tasks (default: 0)`);
+        console.log(`  --checkpoint-file <path>     Custom checkpoint file (for parallel runs)`);
             console.log(`\nData setup:`);
             console.log(`  python scripts/setup_mbppplus.py    # creates data/MbppPlus.jsonl`);
             process.exit(0);
@@ -1634,7 +1638,7 @@ function parseArgs(): Args {
         configs, limit, runs, maxIter, timeout,
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
         tiebreakerModel, tau, seed, tasks, resume, dryRun, judgeBlind, noDebate,
-        rejudgeFrom, merge, offset,
+        rejudgeFrom, merge, offset, checkpointFile,
     };
 }
 
@@ -1645,6 +1649,11 @@ function parseArgs(): Args {
 async function main(): Promise<void> {
     const opts = parseArgs();
     tokenLog.length = 0;
+
+    // Custom checkpoint path for parallel runs
+    if (opts.checkpointFile) {
+        CHECKPOINT_PATH = path.resolve(opts.checkpointFile);
+    }
 
     // ─── --merge mode ───
     if (opts.merge) {
