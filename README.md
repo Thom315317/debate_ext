@@ -31,7 +31,7 @@ task complexity and adapts the debate depth accordingly.
 
 ### Paper-Grade Benchmark (`benchmark_paper.ts`)
 
-A rigorous evaluation framework comparing 8 collaboration configurations
+A rigorous evaluation framework comparing 14 collaboration configurations
 on MBPP+ (378 Python tasks from EvalPlus). Designed for reproducible
 research with full audit trails.
 
@@ -43,20 +43,30 @@ Mid-tier models via Ollama Cloud — chosen to reveal collaboration effects
 | Alias | Model | Provider |
 |-------|-------|----------|
 | QC | Qwen3-Coder 480B | Ollama Cloud |
-| MM | MiniMax M2 | Ollama Cloud |
+| DS | DeepSeek-V3.1 671B | Ollama Cloud |
 
-#### 8 Collaboration Configurations
+#### 14 Collaboration Configurations
 
 | Config | Short | Description |
 |--------|-------|-------------|
 | `gen1-solo` | QC.Solo | Qwen3-Coder generates alone (baseline) |
-| `gen2-solo` | MM.Solo | MiniMax M2 generates alone (baseline) |
-| `gen1-lead` | QC.Lead | Qwen3 leads, MiniMax assists |
-| `gen2-lead` | MM.Lead | MiniMax leads, Qwen3 assists |
-| `gen1-orch` | QC.Orch | Qwen3 orchestrates (reviewer), MiniMax codes |
-| `gen2-orch` | MM.Orch | MiniMax orchestrates (reviewer), Qwen3 codes |
-| `gen1-selfrefine` | QC.SRef | Qwen3 generates then self-reviews (up to N iterations) |
-| `gen2-selfrefine` | MM.SRef | MiniMax generates then self-reviews (up to N iterations) |
+| `gen2-solo` | DS.Solo | DeepSeek generates alone (baseline) |
+| `gen1-lead` | QC.Lead | Qwen3 leads, DeepSeek assists |
+| `gen2-lead` | DS.Lead | DeepSeek leads, Qwen3 assists |
+| `gen1-orch` | QC.Orch | Qwen3 orchestrates (reviewer), DeepSeek codes |
+| `gen2-orch` | DS.Orch | DeepSeek orchestrates (reviewer), Qwen3 codes |
+| `gen1-selfrefine` | QC.SRef | Qwen3 generates then self-reviews |
+| `gen2-selfrefine` | DS.SRef | DeepSeek generates then self-reviews |
+| `gen1-ximprove` | QC.XImp | Both generate, DeepSeek reviews, Qwen3 improves |
+| `gen2-ximprove` | DS.XImp | Both generate, Qwen3 reviews, DeepSeek improves |
+| `gen1-xbest` | QC.XBst | Both generate & cross-review, best selected by test execution |
+| `gen2-xbest` | DS.XBst | Both generate & cross-review, best selected by test execution |
+| `gen1-xfusion` | QC.XFus | Both generate & cross-review, Qwen3 fuses the best of both |
+| `gen2-xfusion` | DS.XFus | Both generate & cross-review, DeepSeek fuses the best of both |
+
+> **Note on xbest:** The `xbest` configs execute the task's base tests internally to select
+> between two candidates. This is equivalent to **pass@2 with oracle selection** — a strictly
+> stronger setting than pass@1. Results should be compared with this caveat in mind.
 
 #### 3-Level Judge Evaluation
 
@@ -187,7 +197,7 @@ node out/benchmark_paper.js --help
 # Dry-run (mock scores, no API calls)
 node out/benchmark_paper.js --dry-run --limit 5
 
-# Full run (378 tasks, 3 runs, all 8 configs)
+# Full run (378 tasks, 3 runs, all 14 configs)
 node out/benchmark_paper.js --limit 378 --runs 3
 
 # Resume after interruption

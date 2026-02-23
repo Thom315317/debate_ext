@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.0] — 2026-02-23
+
+### Added
+- 3 cross-review collaboration modes (ximprove, xbest, xfusion) — 6 new configs (14 total)
+  - ximprove: both generate, other reviews, primary improves
+  - xbest: both generate & cross-review, best selected by test execution
+  - xfusion: both generate & cross-review, primary fuses the best of both
+- HumanEval+ dataset support (`--dataset humaneval`, 164 tasks)
+- `setup_humanevalplus.py` script for data preparation
+- ROADMAP.md with planned improvements
+
+### Changed
+- Default gen2 model: DeepSeek-V3.1 671B (was MiniMax M2)
+- Config count: 14 (was 8)
+- Code truncation limit for judges: 8000 chars (was 4000)
+
 ## [1.0.0] — 2025-02-19
 
 ### Added

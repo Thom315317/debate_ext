@@ -3,7 +3,7 @@
  * DEBATE EXT — Paper-Grade Benchmark (MBPP+ / EvalPlus)
  *
  * Generators (mid-tier, via Ollama):
- *   gen1 = Qwen3-Coder 480B    gen2 = MiniMax M2
+ *   gen1 = Qwen3-Coder 480B    gen2 = DeepSeek-V3.1 671B
  *
  * Judges (frontier, neutral — never generate):
  *   Claude Sonnet 4.5 + GPT-4.1 (primary)
@@ -44,7 +44,10 @@ type BenchConfig =
     | 'gen1-solo' | 'gen2-solo'
     | 'gen1-lead' | 'gen2-lead'
     | 'gen1-orch' | 'gen2-orch'
-    | 'gen1-selfrefine' | 'gen2-selfrefine';
+    | 'gen1-selfrefine' | 'gen2-selfrefine'
+    | 'gen1-ximprove' | 'gen2-ximprove'
+    | 'gen1-xbest' | 'gen2-xbest'
+    | 'gen1-xfusion' | 'gen2-xfusion';
 
 type Agent = 'gen1' | 'gen2';
 
@@ -55,13 +58,19 @@ const ALL_CONFIGS: BenchConfig[] = [
     'gen1-lead', 'gen2-lead',
     'gen1-orch', 'gen2-orch',
     'gen1-selfrefine', 'gen2-selfrefine',
+    'gen1-ximprove', 'gen2-ximprove',
+    'gen1-xbest', 'gen2-xbest',
+    'gen1-xfusion', 'gen2-xfusion',
 ];
 
 const CONFIG_SHORT: Record<BenchConfig, string> = {
-    'gen1-solo': 'QC.Solo', 'gen2-solo': 'MM.Solo',
-    'gen1-lead': 'QC.Lead', 'gen2-lead': 'MM.Lead',
-    'gen1-orch': 'QC.Orch', 'gen2-orch': 'MM.Orch',
-    'gen1-selfrefine': 'QC.SRef', 'gen2-selfrefine': 'MM.SRef',
+    'gen1-solo': 'QC.Solo', 'gen2-solo': 'DS.Solo',
+    'gen1-lead': 'QC.Lead', 'gen2-lead': 'DS.Lead',
+    'gen1-orch': 'QC.Orch', 'gen2-orch': 'DS.Orch',
+    'gen1-selfrefine': 'QC.SRef', 'gen2-selfrefine': 'DS.SRef',
+    'gen1-ximprove': 'QC.XImp', 'gen2-ximprove': 'DS.XImp',
+    'gen1-xbest': 'QC.XBst', 'gen2-xbest': 'DS.XBst',
+    'gen1-xfusion': 'QC.XFus', 'gen2-xfusion': 'DS.XFus',
 };
 
 interface MbppPlusTask {
@@ -548,7 +557,7 @@ function executeCode(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// F. Generation Configs (8 configs × 4 strategies)
+// F. Generation Configs (14 configs × 7 strategies)
 // ═══════════════════════════════════════════════════════════════════════
 
 const CODE_PROMPT_PREFIX = `Write a complete Python function that solves the following task. Output ONLY the Python code (the full function definition), no explanations, no markdown fences.
@@ -657,6 +666,155 @@ async function generateSelfRefine(
     return { code, duration: Date.now() - start, apiCallCount: apiCalls };
 }
 
+
+// ─── Cross-Review: ximprove ───────────────────────────────────────────
+// Both generate independently, other reviews primary's code, primary improves.
+async function generateCrossImprove(
+    primary: Agent, task: MbppPlusTask, maxIter: number, timeout: number,
+    models: { gen1: string; gen2: string }
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
+    const other: Agent = primary === 'gen1' ? 'gen2' : 'gen1';
+    const start = Date.now();
+    let apiCalls = 0;
+
+    // Step 1: Both generate independently (parallel)
+    apiCalls += 2;
+    const [genPrimary, genOther] = await Promise.all([
+        callAgent(primary, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+        callAgent(other, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+    ]);
+    if (genPrimary.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: genPrimary.error };
+    let code = extractPythonCode(genPrimary.content);
+    const otherCode = genOther.error ? '' : extractPythonCode(genOther.content);
+
+    for (let i = 2; i <= maxIter; i++) {
+        // Step 2: Other reviews primary's code (with awareness of its own solution)
+        const reviewPrompt = `You generated your own solution to this task. Now review this OTHER implementation for correctness, edge cases, and quality. Point out any bugs or improvements.\n\nTask: ${task.prompt}\n\nYour solution (for reference):\n${otherCode.slice(0, 3000)}\n\nImplementation to review:\n${code}\n\nRespond with CONSENSUS_OK if correct, or describe the issues.`;
+        apiCalls++;
+        const review = await callAgent(other, reviewPrompt, timeout, models);
+        if (review.error || review.content.includes('CONSENSUS_OK')) {
+            return { code, duration: Date.now() - start, apiCallCount: apiCalls };
+        }
+
+        // Step 3: Primary improves based on feedback
+        const fixPrompt = `Fix the issues found by another model's review:\n\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nYour current code:\n${code}\n\nOutput ONLY the corrected Python code (full function).`;
+        apiCalls++;
+        const fix = await callAgent(primary, fixPrompt, timeout, models);
+        if (fix.error) break;
+        code = extractPythonCode(fix.content);
+    }
+    return { code, duration: Date.now() - start, apiCallCount: apiCalls };
+}
+
+// ─── Cross-Review: xbest ─────────────────────────────────────────────
+// Both generate, both cross-review & improve, select best by test execution.
+// NOTE (paper fairness): xbest executes the task's base tests internally to
+// select between two candidates. This is equivalent to pass@2 with oracle
+// selection — a strictly stronger setting than pass@1. This must be
+// disclosed in the paper to avoid data-leakage concerns from reviewers.
+async function generateCrossBest(
+    primary: Agent, task: MbppPlusTask, maxIter: number, timeout: number,
+    models: { gen1: string; gen2: string }
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
+    const other: Agent = primary === 'gen1' ? 'gen2' : 'gen1';
+    const start = Date.now();
+    let apiCalls = 0;
+
+    // Step 1: Both generate independently (parallel)
+    apiCalls += 2;
+    const [genPrimary, genOther] = await Promise.all([
+        callAgent(primary, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+        callAgent(other, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+    ]);
+    if (genPrimary.error && genOther.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: genPrimary.error };
+    let codePrimary = genPrimary.error ? '' : extractPythonCode(genPrimary.content);
+    let codeOther = genOther.error ? '' : extractPythonCode(genOther.content);
+
+    for (let i = 2; i <= maxIter; i++) {
+        // Step 2: Cross-review (parallel) — each reviews the other's code
+        const reviewPrimaryPrompt = `Review this implementation for correctness. If you find issues, provide the corrected complete version. If correct, respond with CONSENSUS_OK.\n\nTask: ${task.prompt}\n\nYour solution (for reference):\n${codePrimary.slice(0, 3000)}\n\nImplementation to review:\n${codeOther}`;
+        const reviewOtherPrompt = `Review this implementation for correctness. If you find issues, provide the corrected complete version. If correct, respond with CONSENSUS_OK.\n\nTask: ${task.prompt}\n\nYour solution (for reference):\n${codeOther.slice(0, 3000)}\n\nImplementation to review:\n${codePrimary}`;
+
+        apiCalls += 2;
+        const [revPrimary, revOther] = await Promise.all([
+            callAgent(primary, reviewPrimaryPrompt, timeout, models),
+            callAgent(other, reviewOtherPrompt, timeout, models),
+        ]);
+
+        // Step 3: Each improves their own code based on insights from reviewing the other
+        if (revPrimary.content && !revPrimary.content.includes('CONSENSUS_OK')) {
+            const fixPrimaryPrompt = `After reviewing another solution, improve your code. Fix any issues you found apply to your own solution too.\n\nTask: ${task.prompt}\n\nYour current code:\n${codePrimary}\n\nYour review notes:\n${revPrimary.content.slice(0, 2000)}\n\nOutput ONLY the corrected Python code (full function).`;
+            apiCalls++;
+            const fixP = await callAgent(primary, fixPrimaryPrompt, timeout, models);
+            if (!fixP.error) codePrimary = extractPythonCode(fixP.content);
+        }
+        if (revOther.content && !revOther.content.includes('CONSENSUS_OK')) {
+            const fixOtherPrompt = `After reviewing another solution, improve your code. Fix any issues you found apply to your own solution too.\n\nTask: ${task.prompt}\n\nYour current code:\n${codeOther}\n\nYour review notes:\n${revOther.content.slice(0, 2000)}\n\nOutput ONLY the corrected Python code (full function).`;
+            apiCalls++;
+            const fixO = await callAgent(other, fixOtherPrompt, timeout, models);
+            if (!fixO.error) codeOther = extractPythonCode(fixO.content);
+        }
+    }
+
+    // Step 4: Select best by test execution
+    if (!codePrimary && codeOther) return { code: codeOther, duration: Date.now() - start, apiCallCount: apiCalls };
+    if (codePrimary && !codeOther) return { code: codePrimary, duration: Date.now() - start, apiCallCount: apiCalls };
+
+    const [execPrimary, execOther] = await Promise.all([
+        executeCode(codePrimary, task.test_list, task.test_setup_code ?? ''),
+        executeCode(codeOther, task.test_list, task.test_setup_code ?? ''),
+    ]);
+
+    // Prefer passing code; if both pass or both fail, prefer primary
+    if (execPrimary.status === 'pass' && execOther.status !== 'pass') {
+        return { code: codePrimary, duration: Date.now() - start, apiCallCount: apiCalls };
+    } else if (execOther.status === 'pass' && execPrimary.status !== 'pass') {
+        return { code: codeOther, duration: Date.now() - start, apiCallCount: apiCalls };
+    }
+    return { code: codePrimary, duration: Date.now() - start, apiCallCount: apiCalls };
+}
+
+// ─── Cross-Review: xfusion ───────────────────────────────────────────
+// Both generate, both review the other, primary fuses everything.
+async function generateCrossFusion(
+    primary: Agent, task: MbppPlusTask, maxIter: number, timeout: number,
+    models: { gen1: string; gen2: string }
+): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
+    const other: Agent = primary === 'gen1' ? 'gen2' : 'gen1';
+    const start = Date.now();
+    let apiCalls = 0;
+
+    // Step 1: Both generate independently (parallel)
+    apiCalls += 2;
+    const [genPrimary, genOther] = await Promise.all([
+        callAgent(primary, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+        callAgent(other, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+    ]);
+    if (genPrimary.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: genPrimary.error };
+    let codePrimary = extractPythonCode(genPrimary.content);
+    const codeOther = genOther.error ? '' : extractPythonCode(genOther.content);
+
+    for (let i = 2; i <= maxIter; i++) {
+        // Step 2: Cross-review (parallel)
+        const reviewByOtherPrompt = `Review this implementation for correctness, edge cases, and quality. List specific issues if any.\n\nTask: ${task.prompt}\n\nImplementation:\n${codePrimary}`;
+        const reviewByPrimaryPrompt = `Review this implementation for correctness, edge cases, and quality. List specific issues if any.\n\nTask: ${task.prompt}\n\nImplementation:\n${codeOther}`;
+
+        apiCalls += 2;
+        const [feedbackOnPrimary, feedbackOnOther] = await Promise.all([
+            callAgent(other, reviewByOtherPrompt, timeout, models),
+            callAgent(primary, reviewByPrimaryPrompt, timeout, models),
+        ]);
+
+        // Step 3: Primary fuses both codes + both reviews into final version
+        const fusionPrompt = `You have two implementations of the same task, plus reviews of each. Produce the BEST possible version by combining the strengths of both. Output ONLY the Python code (full function).\n\nTask: ${task.prompt}\n\nImplementation A (yours):\n${codePrimary}\n\nReview of A:\n${(feedbackOnPrimary.content || 'No feedback').slice(0, 1500)}\n\nImplementation B (other model):\n${codeOther.slice(0, 3000)}\n\nReview of B:\n${(feedbackOnOther.content || 'No feedback').slice(0, 1500)}\n\nOutput ONLY the fused Python code (full function).`;
+        apiCalls++;
+        const fusion = await callAgent(primary, fusionPrompt, timeout, models);
+        if (fusion.error) break;
+        codePrimary = extractPythonCode(fusion.content);
+    }
+    return { code: codePrimary, duration: Date.now() - start, apiCallCount: apiCalls };
+}
+
 async function generateForConfig(
     config: BenchConfig, task: MbppPlusTask, maxIter: number, timeout: number,
     models: { gen1: string; gen2: string }
@@ -670,6 +828,12 @@ async function generateForConfig(
         case 'gen2-orch': return generateOrchCode('gen2', task, maxIter, timeout, models);
         case 'gen1-selfrefine': return generateSelfRefine('gen1', task, maxIter, timeout, models);
         case 'gen2-selfrefine': return generateSelfRefine('gen2', task, maxIter, timeout, models);
+        case 'gen1-ximprove': return generateCrossImprove('gen1', task, maxIter, timeout, models);
+        case 'gen2-ximprove': return generateCrossImprove('gen2', task, maxIter, timeout, models);
+        case 'gen1-xbest': return generateCrossBest('gen1', task, maxIter, timeout, models);
+        case 'gen2-xbest': return generateCrossBest('gen2', task, maxIter, timeout, models);
+        case 'gen1-xfusion': return generateCrossFusion('gen1', task, maxIter, timeout, models);
+        case 'gen2-xfusion': return generateCrossFusion('gen2', task, maxIter, timeout, models);
     }
 }
 
@@ -686,7 +850,7 @@ function buildEvalPrompt(
         const header = blind
             ? `### Candidate ${c.label}`
             : `### Candidate ${c.label} [exec: ${c.execStatus}]`;
-        return `${header}\n\`\`\`python\n${c.code.slice(0, 4000)}\n\`\`\``;
+        return `${header}\n\`\`\`python\n${c.code.slice(0, 8000)}\n\`\`\``;
     }).join('\n\n');
 
     return `You are evaluating code generated by LLMs for the following task.
@@ -1390,8 +1554,8 @@ function computePaperMetrics(
     // McNemar paired tests: solo vs each collab config, per generator
     const mcnemarResults: { pair: string; b: number; c: number; chi2: number; pLevel: string }[] = [];
     const generators: Array<{ prefix: string; solo: BenchConfig; collabs: BenchConfig[] }> = [
-        { prefix: 'gen1', solo: 'gen1-solo', collabs: ['gen1-lead', 'gen1-orch', 'gen1-selfrefine'] },
-        { prefix: 'gen2', solo: 'gen2-solo', collabs: ['gen2-lead', 'gen2-orch', 'gen2-selfrefine'] },
+        { prefix: 'gen1', solo: 'gen1-solo', collabs: ['gen1-lead', 'gen1-orch', 'gen1-selfrefine', 'gen1-ximprove', 'gen1-xbest', 'gen1-xfusion'] },
+        { prefix: 'gen2', solo: 'gen2-solo', collabs: ['gen2-lead', 'gen2-orch', 'gen2-selfrefine', 'gen2-ximprove', 'gen2-xbest', 'gen2-xfusion'] },
     ];
     for (const gen of generators) {
         if (!configs.includes(gen.solo)) continue;
@@ -1564,7 +1728,7 @@ function parseArgs(): Args {
     let maxIter = 2;
     let timeout = 600_000;
     let gen1Model = 'qwen3-coder:480b-cloud';
-    let gen2Model = 'minimax-m2:cloud';
+    let gen2Model = 'deepseek-v3.1:671b-cloud';
     let claudeJudgeModel = 'claude-sonnet-4-5-20250929';
     let openaiJudgeModel = 'gpt-4.1';
     let tiebreakerModel = 'gemini-2.5-pro';
@@ -1616,7 +1780,7 @@ function parseArgs(): Args {
             console.log(`  --max-iter N                 Max debate iterations (default: 2)`);
             console.log(`  --timeout N                  Timeout per call in ms (default: 600000)`);
             console.log(`  --gen1-model MODEL           Gen1 model (default: qwen3-coder:480b-cloud)`);
-            console.log(`  --gen2-model MODEL           Gen2 model (default: minimax-m2:cloud)`);
+            console.log(`  --gen2-model MODEL           Gen2 model (default: deepseek-v3.1:671b-cloud)`);
             console.log(`  --claude-judge-model MODEL   Claude judge (default: claude-sonnet-4-5-20250929)`);
             console.log(`  --openai-judge-model MODEL   GPT judge (default: gpt-4.1)`);
             console.log(`  --tiebreaker-model MODEL     Tie-breaker (default: gemini-2.5-pro)`);
@@ -1896,8 +2060,9 @@ async function main(): Promise<void> {
         allTasks = loadMbppPlus(dataPath);
     } else if (opts.dryRun) {
         // Dry-run without data: generate synthetic task stubs
+        const taskPrefix = opts.dataset === 'humaneval' ? 'HumanEval' : 'Mbpp';
         allTasks = Array.from({ length: 50 }, (_, i) => ({
-            task_id: `Mbpp/${i + 1}`,
+            task_id: `${taskPrefix}/${i + 1}`,
             prompt: `Write a function to compute the ${i + 1}th value in a sequence.`,
             code: `def task_${i + 1}(n):\n    return n * ${i + 1}`,
             test_list: [`assert task_${i + 1}(1) == ${i + 1}`, `assert task_${i + 1}(2) == ${(i + 1) * 2}`],
@@ -1906,8 +2071,10 @@ async function main(): Promise<void> {
             test_list_plus: [`assert task_${i + 1}(0) == 0`, `assert task_${i + 1}(-1) == -${i + 1}`, `assert task_${i + 1}(100) == ${(i + 1) * 100}`],
         }));
     } else {
-        console.error(`ERROR: MBPP+ data not found at ${dataPath}`);
-        console.error(`Run: python scripts/setup_mbppplus.py`);
+        const setupScript = opts.dataset === 'humaneval' ? 'setup_humanevalplus.py' : 'setup_mbppplus.py';
+        const dsName = opts.dataset === 'humaneval' ? 'HumanEval+' : 'MBPP+';
+        console.error(`ERROR: ${dsName} data not found at ${dataPath}`);
+        console.error(`Run: python scripts/${setupScript}`);
         process.exit(1);
     }
 
@@ -1916,11 +2083,13 @@ async function main(): Promise<void> {
     }
     const selectedTasks = allTasks.slice(opts.offset, opts.offset + opts.limit);
 
+    const datasetLabel = opts.dataset === 'humaneval' ? 'HumanEval+' : 'MBPP+';
+    const cfgCount = opts.configs.length;
     console.log('╔══════════════════════════════════════════════════════════════════════════╗');
-    console.log('║  DEBATE EXT — Paper-Grade Benchmark (MBPP+)                           ║');
-    console.log('║  8 configs × N tasks × R runs + 2-judge debate + tie-breaker            ║');
+    console.log(`║  DEBATE EXT — Paper-Grade Benchmark (${datasetLabel})`.padEnd(75) + '║');
+    console.log(`║  ${cfgCount} configs × N tasks × R runs + 2-judge debate + tie-breaker`.padEnd(75) + '║');
     if (opts.dryRun) {
-    console.log('║  DRY-RUN MODE — mock scores, no API calls                               ║');
+    console.log('║  DRY-RUN MODE — mock scores, no API calls'.padEnd(75) + '║');
     }
     console.log('╚══════════════════════════════════════════════════════════════════════════╝\n');
 
@@ -1940,7 +2109,7 @@ async function main(): Promise<void> {
     console.log(`  Debate      : ${opts.noDebate ? 'OFF (R1 only, no escalation)' : 'ON (R1 \u2192 R2 \u2192 TB on divergence)'}`);
     if (opts.offset > 0) console.log(`  Offset      : ${opts.offset} (skip first ${opts.offset} tasks)`);
     console.log(`  Configs     : ${opts.configs.map(c => CONFIG_SHORT[c]).join(', ')}`);
-    console.log(`  Tasks       : ${selectedTasks.length} / ${allTasks.length} MBPP+ problems`);
+    console.log(`  Tasks       : ${selectedTasks.length} / ${allTasks.length} ${datasetLabel} problems`);
     console.log(`  Runs        : ${opts.runs}`);
     console.log(`  Max iters   : ${opts.maxIter}`);
     console.log(`  Timeout     : ${opts.timeout}ms`);

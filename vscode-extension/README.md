@@ -4,7 +4,7 @@ AI debate orchestrator: two LLM generators collaborate via structured debate, ev
 
 ## Features
 
-- **Multi-Agent Debate:** Orchestrates collaboration between two generators (solo, lead, orch, selfrefine modes).
+- **Multi-Agent Debate:** Orchestrates collaboration between two generators (solo, lead, orch, selfrefine, ximprove, xbest, xfusion modes).
 - **3-Level Judge Protocol:** R1 (independent) → R2 (debate on divergence) → Tie-breaker (Gemini).
 - **Paper-Grade Benchmark:** MBPP+ 378 tasks, pass@k, McNemar, Spearman, Cohen's kappa.
 - **VS Code Integration:** Native chat panel, diff previews, and workspace context awareness.
@@ -38,7 +38,7 @@ Press **F5** in VS Code to launch the Extension Development Host.
 | `patchApplier.ts` | Diff extraction, parsing, preview, WorkspaceEdit apply |
 | `chatPanel.ts` | Webview sidebar panel for chat UI |
 | `logger.ts` | Output channel logging + persistent run logs |
-| `benchmark_paper.ts` | **Paper benchmark** — MBPP+ 378 tasks, 8 configs, blind judges, EvalPlus+ |
+| `benchmark_paper.ts` | **Paper benchmark** — MBPP+ 378 tasks, 14 configs, blind judges, EvalPlus+ |
 | `benchmark.ts` | *(deprecated)* v1 benchmark with hardcoded tasks |
 | `benchmark_v2.ts` | *(deprecated)* v2 benchmark using HumanEval |
 
