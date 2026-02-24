@@ -560,16 +560,16 @@ function executeCode(
 // F. Generation Configs (14 configs × 7 strategies)
 // ═══════════════════════════════════════════════════════════════════════
 
-const CODE_PROMPT_PREFIX = `Write a complete Python function that solves the following task. Output ONLY the Python code (the full function definition), no explanations, no markdown fences.
-
-`;
+function codePrompt(task: MbppPlusTask): string {
+    return `Write a complete Python function that solves the following task. Output ONLY the Python code (the full function definition), no explanations, no markdown fences. IMPORTANT: the function MUST be named exactly \`${task.entry_point}\`.\n\n${task.prompt}`;
+}
 
 async function generateSolo(
     agent: Agent, task: MbppPlusTask, timeout: number,
     models: { gen1: string; gen2: string }
 ): Promise<{ code: string; duration: number; apiCallCount: number; error?: string }> {
     const start = Date.now();
-    const r = await callAgent(agent, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
+    const r = await callAgent(agent, codePrompt(task), timeout, models);
     return {
         code: r.error ? '' : extractPythonCode(r.content),
         duration: Date.now() - start,
@@ -587,7 +587,7 @@ async function generateLeadConsult(
     let apiCalls = 0;
 
     apiCalls++;
-    const gen = await callAgent(leader, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
+    const gen = await callAgent(leader, codePrompt(task), timeout, models);
     if (gen.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: gen.error };
     let code = extractPythonCode(gen.content);
 
@@ -598,7 +598,7 @@ async function generateLeadConsult(
         if (review.error || review.content.includes('CONSENSUS_OK')) {
             return { code, duration: Date.now() - start, apiCallCount: apiCalls };
         }
-        const fixPrompt = `Fix the issues in this Python function:\n\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nCurrent implementation:\n${code}\n\nOutput ONLY the corrected Python code (full function).`;
+        const fixPrompt = `Fix the issues in this Python function (keep the name \`${task.entry_point}\`):\n\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nCurrent implementation:\n${code}\n\nOutput ONLY the corrected Python code (function named \`${task.entry_point}\`).`;
         apiCalls++;
         const fix = await callAgent(leader, fixPrompt, timeout, models);
         if (fix.error) break;
@@ -620,7 +620,7 @@ async function generateOrchCode(
     const plan = await callAgent(orchestrator, planPrompt, timeout, models);
     if (plan.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: plan.error };
 
-    const implPrompt = `Implement this Python function following the plan below. Output ONLY the Python code (full function).\n\nTask: ${task.prompt}\n\nPlan:\n${plan.content.slice(0, 3000)}`;
+    const implPrompt = `Implement this Python function following the plan below. The function MUST be named \`${task.entry_point}\`. Output ONLY the Python code (full function).\n\nTask: ${task.prompt}\n\nPlan:\n${plan.content.slice(0, 3000)}`;
     apiCalls++;
     const impl = await callAgent(coder, implPrompt, timeout, models);
     if (impl.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: impl.error };
@@ -633,7 +633,7 @@ async function generateOrchCode(
         if (review.error || review.content.includes('CONSENSUS_OK')) {
             return { code, duration: Date.now() - start, apiCallCount: apiCalls };
         }
-        const fixPrompt = `Fix the issues:\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nCode:\n${code}\n\nOutput ONLY the corrected Python code (full function).`;
+        const fixPrompt = `Fix the issues (keep function name \`${task.entry_point}\`):\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nCode:\n${code}\n\nOutput ONLY the corrected Python code (function named \`${task.entry_point}\`).`;
         apiCalls++;
         const fix = await callAgent(coder, fixPrompt, timeout, models);
         if (fix.error) break;
@@ -649,12 +649,12 @@ async function generateSelfRefine(
     const start = Date.now();
     let apiCalls = 0;
     apiCalls++;
-    const gen = await callAgent(agent, CODE_PROMPT_PREFIX + task.prompt, timeout, models);
+    const gen = await callAgent(agent, codePrompt(task), timeout, models);
     if (gen.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: gen.error };
     let code = extractPythonCode(gen.content);
 
     for (let i = 2; i <= maxIter; i++) {
-        const reviewPrompt = `Review your code for correctness, edge cases, and quality.\nIf you find issues, provide the corrected complete version.\nIf it's correct, respond with CONSENSUS_OK.\n\nTask: ${task.prompt}\n\nImplementation:\n${code}`;
+        const reviewPrompt = `Review your code for correctness, edge cases, and quality.\nIf you find issues, provide the corrected complete version (keep function name \`${task.entry_point}\`).\nIf it's correct, respond with CONSENSUS_OK.\n\nTask: ${task.prompt}\n\nImplementation:\n${code}`;
         apiCalls++;
         const review = await callAgent(agent, reviewPrompt, timeout, models);
         if (review.error) break;
@@ -680,8 +680,8 @@ async function generateCrossImprove(
     // Step 1: Both generate independently (parallel)
     apiCalls += 2;
     const [genPrimary, genOther] = await Promise.all([
-        callAgent(primary, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
-        callAgent(other, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+        callAgent(primary, codePrompt(task), timeout, models),
+        callAgent(other, codePrompt(task), timeout, models),
     ]);
     if (genPrimary.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: genPrimary.error };
     let code = extractPythonCode(genPrimary.content);
@@ -697,7 +697,7 @@ async function generateCrossImprove(
         }
 
         // Step 3: Primary improves based on feedback
-        const fixPrompt = `Fix the issues found by another model's review:\n\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nYour current code:\n${code}\n\nOutput ONLY the corrected Python code (full function).`;
+        const fixPrompt = `Fix the issues found by another model's review (keep function name \`${task.entry_point}\`):\n\n${review.content.slice(0, 2000)}\n\nTask: ${task.prompt}\n\nYour current code:\n${code}\n\nOutput ONLY the corrected Python code (function named \`${task.entry_point}\`).`;
         apiCalls++;
         const fix = await callAgent(primary, fixPrompt, timeout, models);
         if (fix.error) break;
@@ -723,8 +723,8 @@ async function generateCrossBest(
     // Step 1: Both generate independently (parallel)
     apiCalls += 2;
     const [genPrimary, genOther] = await Promise.all([
-        callAgent(primary, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
-        callAgent(other, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+        callAgent(primary, codePrompt(task), timeout, models),
+        callAgent(other, codePrompt(task), timeout, models),
     ]);
     if (genPrimary.error && genOther.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: genPrimary.error };
     let codePrimary = genPrimary.error ? '' : extractPythonCode(genPrimary.content);
@@ -743,13 +743,13 @@ async function generateCrossBest(
 
         // Step 3: Each improves their own code based on insights from reviewing the other
         if (revPrimary.content && !revPrimary.content.includes('CONSENSUS_OK')) {
-            const fixPrimaryPrompt = `After reviewing another solution, improve your code. Fix any issues you found apply to your own solution too.\n\nTask: ${task.prompt}\n\nYour current code:\n${codePrimary}\n\nYour review notes:\n${revPrimary.content.slice(0, 2000)}\n\nOutput ONLY the corrected Python code (full function).`;
+            const fixPrimaryPrompt = `After reviewing another solution, improve your code (keep function name \`${task.entry_point}\`). Fix any issues you found apply to your own solution too.\n\nTask: ${task.prompt}\n\nYour current code:\n${codePrimary}\n\nYour review notes:\n${revPrimary.content.slice(0, 2000)}\n\nOutput ONLY the corrected Python code (function named \`${task.entry_point}\`).`;
             apiCalls++;
             const fixP = await callAgent(primary, fixPrimaryPrompt, timeout, models);
             if (!fixP.error) codePrimary = extractPythonCode(fixP.content);
         }
         if (revOther.content && !revOther.content.includes('CONSENSUS_OK')) {
-            const fixOtherPrompt = `After reviewing another solution, improve your code. Fix any issues you found apply to your own solution too.\n\nTask: ${task.prompt}\n\nYour current code:\n${codeOther}\n\nYour review notes:\n${revOther.content.slice(0, 2000)}\n\nOutput ONLY the corrected Python code (full function).`;
+            const fixOtherPrompt = `After reviewing another solution, improve your code (keep function name \`${task.entry_point}\`). Fix any issues you found apply to your own solution too.\n\nTask: ${task.prompt}\n\nYour current code:\n${codeOther}\n\nYour review notes:\n${revOther.content.slice(0, 2000)}\n\nOutput ONLY the corrected Python code (function named \`${task.entry_point}\`).`;
             apiCalls++;
             const fixO = await callAgent(other, fixOtherPrompt, timeout, models);
             if (!fixO.error) codeOther = extractPythonCode(fixO.content);
@@ -787,8 +787,8 @@ async function generateCrossFusion(
     // Step 1: Both generate independently (parallel)
     apiCalls += 2;
     const [genPrimary, genOther] = await Promise.all([
-        callAgent(primary, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
-        callAgent(other, CODE_PROMPT_PREFIX + task.prompt, timeout, models),
+        callAgent(primary, codePrompt(task), timeout, models),
+        callAgent(other, codePrompt(task), timeout, models),
     ]);
     if (genPrimary.error) return { code: '', duration: Date.now() - start, apiCallCount: apiCalls, error: genPrimary.error };
     let codePrimary = extractPythonCode(genPrimary.content);
@@ -806,7 +806,7 @@ async function generateCrossFusion(
         ]);
 
         // Step 3: Primary fuses both codes + both reviews into final version
-        const fusionPrompt = `You have two implementations of the same task, plus reviews of each. Produce the BEST possible version by combining the strengths of both. Output ONLY the Python code (full function).\n\nTask: ${task.prompt}\n\nImplementation A (yours):\n${codePrimary}\n\nReview of A:\n${(feedbackOnPrimary.content || 'No feedback').slice(0, 1500)}\n\nImplementation B (other model):\n${codeOther.slice(0, 3000)}\n\nReview of B:\n${(feedbackOnOther.content || 'No feedback').slice(0, 1500)}\n\nOutput ONLY the fused Python code (full function).`;
+        const fusionPrompt = `You have two implementations of the same task, plus reviews of each. Produce the BEST possible version by combining the strengths of both. IMPORTANT: the function MUST be named exactly \`${task.entry_point}\` — do NOT rename it. Output ONLY the Python code (full function).\n\nTask: ${task.prompt}\n\nImplementation A (yours):\n${codePrimary}\n\nReview of A:\n${(feedbackOnPrimary.content || 'No feedback').slice(0, 1500)}\n\nImplementation B (other model):\n${codeOther.slice(0, 3000)}\n\nReview of B:\n${(feedbackOnOther.content || 'No feedback').slice(0, 1500)}\n\nOutput ONLY the fused Python code (full function named \`${task.entry_point}\`).`;
         apiCalls++;
         const fusion = await callAgent(primary, fusionPrompt, timeout, models);
         if (fusion.error) break;
@@ -1057,8 +1057,32 @@ async function evaluateWithPanel(
     noDebate: boolean = false,
 ): Promise<JudgeAudit> {
     const valid = outputs.filter(o => o.code.length > 0);
-    const labels = 'ABCDEFGH'.split('').slice(0, valid.length);
-    const shuffled = shuffle(valid);
+
+    // Dedup: group configs that produced identical code, send only unique codes to judges
+    const codeToConfigs = new Map<string, BenchConfig[]>();
+    for (const o of valid) {
+        const existing = codeToConfigs.get(o.code);
+        if (existing) { existing.push(o.config); }
+        else { codeToConfigs.set(o.code, [o.config]); }
+    }
+    // Build unique entries (one per distinct code), keeping first config as representative
+    const unique: typeof valid = [];
+    const dupMap = new Map<BenchConfig, BenchConfig>(); // duplicate -> representative
+    for (const [code, cfgs] of codeToConfigs) {
+        const repr = cfgs[0];
+        const entry = valid.find(o => o.config === repr)!;
+        unique.push(entry);
+        for (const cfg of cfgs.slice(1)) {
+            dupMap.set(cfg, repr);
+        }
+    }
+    if (dupMap.size > 0) {
+        process.stdout.write(`[DEDUP:${valid.length}->${unique.length}] `);
+    }
+
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const labels = alphabet.split('').slice(0, unique.length);
+    const shuffled = shuffle(unique);
     const labelMap = new Map<string, BenchConfig>();
     for (let i = 0; i < shuffled.length; i++) {
         labelMap.set(labels[i], shuffled[i].config);
@@ -1075,11 +1099,18 @@ async function evaluateWithPanel(
         { name: 'GPT', call: (p, t) => callOpenAI(p, t, judgeModels.openai) },
     ];
 
+    // Convert label-keyed scores to config-keyed, propagating to duplicates
     function labelToConfig(scores: Record<string, QualityScores>): Partial<Record<BenchConfig, QualityScores>> {
         const result: Partial<Record<BenchConfig, QualityScores>> = {};
         for (const [label, s] of Object.entries(scores)) {
             const cfg = labelMap.get(label);
             if (cfg) result[cfg] = s;
+        }
+        // Propagate scores to configs with identical code
+        for (const [dup, repr] of dupMap) {
+            if (result[repr] && !result[dup]) {
+                result[dup] = result[repr];
+            }
         }
         return result;
     }

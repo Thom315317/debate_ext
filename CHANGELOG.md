@@ -16,6 +16,11 @@
 - Config count: 14 (was 8)
 - Code truncation limit for judges: 8000 chars (was 4000)
 
+### Fixed
+- Judge labels limited to A–H (8): configs 9–14 were never scored. Now uses A–Z.
+- Function renaming in all generation/fix/fusion prompts: `entry_point` now enforced, eliminating NameError failures (33–73% of prior errors)
+- Code dedup before judge evaluation: identical codes sent once, scores propagated to all matching configs
+
 ## [1.0.0] — 2025-02-19
 
 ### Added

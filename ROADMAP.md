@@ -8,6 +8,7 @@ Planned and completed improvements for debate_ext.
 - **HumanEval+ dataset**: 164 tasks from OpenAI HumanEval, augmented by EvalPlus. Use `--dataset humaneval`.
 - **DeepSeek-V3.1 as gen2**: replaced MiniMax M2 with DeepSeek-V3.1 671B for a quasi-symmetric pair.
 - **Multi-pass support**: `--max-iter N` controls review iterations for all collaboration modes.
+- **Judge evaluation fixes**: labels extended to A–Z (was A–H, blocking 6 configs), code dedup with score propagation, `entry_point` enforced in all prompts to prevent function renaming.
 
 ## Planned
 
