@@ -118,6 +118,7 @@ interface JudgeAudit {
     j1: Partial<Record<BenchConfig, QualityScores>>;  // post-debate
     j2: Partial<Record<BenchConfig, QualityScores>>;  // final (includes TB)
     finalScores: Partial<Record<BenchConfig, QualityScores>>;
+    binaryVerdicts?: Partial<Record<BenchConfig, { pass: boolean; confidence: number; reason: string }[]>>;
 }
 
 interface TokenUsage {
@@ -185,6 +186,8 @@ interface PaperReport {
         runs: number;
         judgeBlind: boolean;
         noDebate: boolean;
+        noJudge?: boolean;
+        judgeStrategy?: 'scoring' | 'binary';
         rejudgedFrom?: string;
         mergedFrom?: string[];
     };
@@ -215,11 +218,12 @@ function trackTokens(t: TokenUsage | undefined): void {
     if (t && t.totalTokens > 0) tokenLog.push(t);
 }
 
+// NOTE: temperature=0.2 set explicitly (v1.x bug: was absent, using API default 1.0)
 function callClaude(prompt: string, timeoutMs: number, model: string): Promise<ApiResult> {
     const apiKey = process.env.ANTHROPIC_API_KEY!;
     return new Promise((resolve) => {
         const body = JSON.stringify({
-            model, max_tokens: 16384,
+            model, max_tokens: 16384, temperature: 0.2,
             messages: [{ role: 'user', content: prompt }],
         });
         const req = https.request({
@@ -498,6 +502,36 @@ function extractPythonCode(response: string): string {
     const pyBlocks = code.match(/```(?:python|py)?\s*\n([\s\S]*?)```/g);
     if (pyBlocks) {
         code = pyBlocks.map(b => b.replace(/```(?:python|py)?\s*\n/, '').replace(/```$/, '')).join('\n');
+        return code.trim();
+    }
+
+    // Fallback: extract Python functions from raw text (no markdown fences)
+    const lines = code.split('\n');
+    let inFunction = false;
+    const extracted: string[] = [];
+    const imports: string[] = [];
+
+    for (const line of lines) {
+        if (!inFunction && /^(import\s|from\s)/.test(line)) {
+            imports.push(line);
+        } else if (!inFunction && /^def\s+\w+/.test(line)) {
+            inFunction = true;
+            extracted.push(line);
+        } else if (inFunction) {
+            if (line.trim() === '' || /^\s+/.test(line)) {
+                extracted.push(line);
+            } else if (/^def\s+\w+/.test(line)) {
+                extracted.push(line);
+            } else if (/^(import\s|from\s)/.test(line)) {
+                imports.push(line);
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (extracted.length > 0) {
+        code = [...imports, ...extracted].join('\n');
     }
 
     return code.trim();
@@ -520,10 +554,17 @@ function executeCode(
 
         const start = Date.now();
 
-        const proc = spawn('python3', ['-c', fullCode], {
-            timeout: timeoutMs,
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        let proc;
+        try {
+            proc = spawn('python3', ['-c', fullCode], {
+                timeout: timeoutMs,
+                stdio: ['ignore', 'pipe', 'pipe'],
+            });
+        } catch (spawnErr) {
+            // E2BIG: argument list too long — code + tests exceed OS limit
+            resolve({ status: 'eval_error', output: `spawn error: ${String(spawnErr)}`, timeMs: Date.now() - start });
+            return;
+        }
 
         let stdout = '';
         let stderr = '';
@@ -661,7 +702,8 @@ async function generateSelfRefine(
         if (review.content.includes('CONSENSUS_OK')) {
             return { code, duration: Date.now() - start, apiCallCount: apiCalls };
         }
-        code = extractPythonCode(review.content);
+        const extracted = extractPythonCode(review.content);
+        if (extracted) code = extracted;
     }
     return { code, duration: Date.now() - start, apiCallCount: apiCalls };
 }
@@ -810,7 +852,8 @@ async function generateCrossFusion(
         apiCalls++;
         const fusion = await callAgent(primary, fusionPrompt, timeout, models);
         if (fusion.error) break;
-        codePrimary = extractPythonCode(fusion.content);
+        const extracted = extractPythonCode(fusion.content);
+        if (extracted) codePrimary = extracted;
     }
     return { code: codePrimary, duration: Date.now() - start, apiCallCount: apiCalls };
 }
@@ -1045,6 +1088,137 @@ function averageScores(
     }
     return result;
 }
+
+// ── Strategy B: Binary pass/fail prediction (one call per candidate per judge) ──
+
+function buildBinaryPrompt(taskPrompt: string, entryPoint: string, code: string): string {
+    return `You are a code evaluation expert. Given a task description and a candidate solution, predict whether this code will pass all unit tests.
+
+Task:
+${taskPrompt}
+
+Entry point: ${entryPoint}
+
+Candidate code:
+${code}
+
+Answer ONLY with this exact JSON format, nothing else:
+{"pass": true, "confidence": 0.85, "reason": "brief reason"}
+
+Rules:
+- "pass": true if you believe the code will pass ALL tests, false otherwise
+- "confidence": your confidence in this prediction, from 0.0 to 1.0
+- "reason": one sentence explaining your prediction`;
+}
+
+function parseBinaryResponse(raw: string): { pass: boolean; confidence: number; reason: string } | null {
+    try {
+        const match = raw.match(/\{[\s\S]*?\}/);
+        if (!match) return null;
+        const obj = JSON.parse(match[0]);
+        if (typeof obj.pass !== 'boolean' || typeof obj.confidence !== 'number') return null;
+        return { pass: !!obj.pass, confidence: Math.max(0, Math.min(1, obj.confidence)), reason: String(obj.reason || '') };
+    } catch { return null; }
+}
+
+async function evaluateWithBinaryStrategy(
+    taskPrompt: string,
+    entryPoint: string,
+    outputs: { config: BenchConfig; code: string; execStatus: ExecStatus }[],
+    timeout: number,
+    judgeModels: { claude: string; openai: string },
+    tiebreakerModel: string,
+): Promise<JudgeAudit> {
+    const valid = outputs.filter(o => o.code.length > 0);
+
+    // Dedup identical codes
+    const codeToConfigs = new Map<string, BenchConfig[]>();
+    for (const o of valid) {
+        const existing = codeToConfigs.get(o.code);
+        if (existing) { existing.push(o.config); }
+        else { codeToConfigs.set(o.code, [o.config]); }
+    }
+    const unique: typeof valid = [];
+    const dupMap = new Map<BenchConfig, BenchConfig>();
+    for (const [code, cfgs] of codeToConfigs) {
+        const repr = cfgs[0];
+        unique.push(valid.find(o => o.config === repr)!);
+        for (const cfg of cfgs.slice(1)) dupMap.set(cfg, repr);
+    }
+    if (dupMap.size > 0) process.stdout.write(`[DEDUP:${valid.length}->${unique.length}] `);
+
+    const judges: { name: string; call: (p: string, t: number) => Promise<ApiResult> }[] = [
+        { name: 'Claude', call: (p, t) => callClaude(p, t, judgeModels.claude) },
+        { name: 'GPT', call: (p, t) => callOpenAI(p, t, judgeModels.openai) },
+    ];
+
+    const binaryVerdicts: Partial<Record<BenchConfig, { pass: boolean; confidence: number; reason: string }[]>> = {};
+    const finalScores: Partial<Record<BenchConfig, QualityScores>> = {};
+    let tiebreakerUsed = false;
+    let tiebreakerError: string | undefined;
+
+    for (const entry of unique) {
+        const prompt = buildBinaryPrompt(taskPrompt, entryPoint, entry.code);
+        const verdicts: { pass: boolean; confidence: number; reason: string }[] = [];
+
+        // Call both judges in parallel
+        const results = await Promise.all(judges.map(j => j.call(prompt, timeout)));
+        for (const res of results) {
+            const parsed = parseBinaryResponse(res.content);
+            if (parsed) verdicts.push(parsed);
+        }
+
+        // Divergence: opposite verdict OR |Δconfidence| > 0.3
+        const divergent = verdicts.length === 2 &&
+            (verdicts[0].pass !== verdicts[1].pass ||
+             Math.abs(verdicts[0].confidence - verdicts[1].confidence) > 0.3);
+
+        // Tie-breaker on divergence
+        if (divergent) {
+            const tbResult = await callGemini(prompt, timeout, tiebreakerModel);
+            const tbParsed = parseBinaryResponse(tbResult.content);
+            if (tbParsed) {
+                verdicts.push(tbParsed);
+                tiebreakerUsed = true;
+            } else {
+                tiebreakerError = tbResult.error || 'Failed to parse tiebreaker response';
+            }
+        }
+
+        // Store verdicts for this config
+        binaryVerdicts[entry.config] = verdicts;
+
+        // Convert to QualityScores for compatibility (binary → 10 or 1 total)
+        if (verdicts.length > 0) {
+            const passCount = verdicts.filter(v => v.pass).length;
+            const majorityPass = passCount > verdicts.length / 2;
+            const avgConfidence = verdicts.reduce((a, v) => a + v.confidence, 0) / verdicts.length;
+            const total = majorityPass ? Math.round(5 + avgConfidence * 5) : Math.round((1 - avgConfidence) * 5);
+            finalScores[entry.config] = {
+                correctness: total, completeness: total, edgeCases: total,
+                codeQuality: total, readability: total, total,
+                justification: verdicts.map(v => `${v.pass ? 'PASS' : 'FAIL'}@${v.confidence.toFixed(2)}: ${v.reason}`).join(' | '),
+                risk_fail_prob: majorityPass ? 1 - avgConfidence : avgConfidence,
+            };
+        }
+
+        // Propagate to duplicates
+        for (const [dup, repr] of dupMap) {
+            if (repr === entry.config) {
+                binaryVerdicts[dup] = binaryVerdicts[entry.config];
+                if (finalScores[entry.config]) finalScores[dup] = finalScores[entry.config];
+            }
+        }
+    }
+
+    return {
+        round1: [], divergenceDetected: tiebreakerUsed, tiebreakerUsed, tiebreakerError,
+        j0: finalScores, j1: finalScores, j2: finalScores, finalScores,
+        binaryVerdicts,
+    };
+}
+
+// ── Strategy A: Scoring (existing panel evaluation) ──
 
 async function evaluateWithPanel(
     taskPrompt: string,
@@ -1749,6 +1923,8 @@ interface Args {
     offset: number;
     checkpointFile: string | null;
     dataset: string;
+    noJudge: boolean;
+    judgeStrategy: 'scoring' | 'binary';
 }
 
 function parseArgs(): Args {
@@ -1775,6 +1951,8 @@ function parseArgs(): Args {
     let offset = 0;
     let checkpointFile: string | null = null;
     let dataset = 'mbpp';
+    let noJudge = false;
+    let judgeStrategy: 'scoring' | 'binary' = 'scoring';
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--configs' && args[i + 1]) configs = args[++i].split(',') as BenchConfig[];
@@ -1799,12 +1977,14 @@ function parseArgs(): Args {
         else if (args[i] === '--offset' && args[i + 1]) offset = parseInt(args[++i], 10);
         else if (args[i] === '--checkpoint-file' && args[i + 1]) checkpointFile = args[++i];
         else if (args[i] === '--dataset' && args[i + 1]) dataset = args[++i];
+        else if (args[i] === '--no-judge') noJudge = true;
+        else if (args[i] === '--judge-strategy' && args[i + 1]) judgeStrategy = args[++i] as 'scoring' | 'binary';
         else if (args[i] === '--help') {
             console.log(`DEBATE EXT — Paper-Grade Benchmark (MBPP+ / EvalPlus)\n`);
-            console.log(`Generates code with 8 collaboration configs, executes tests,`);
+            console.log(`Generates code with 14 configs (7 strategies × 2 generators), executes tests,`);
             console.log(`evaluates with 2-judge debate + tie-breaker, computes paper metrics.\n`);
             console.log(`Options:`);
-            console.log(`  --configs c1,c2              Select configs (default: all 8)`);
+            console.log(`  --configs c1,c2              Select configs (default: all 14)`);
             console.log(`  --limit N                    Max tasks to run (default: 30)`);
             console.log(`  --runs N                     Number of runs (default: 3)`);
             console.log(`  --tasks Mbpp/0,...            Specific task IDs`);
@@ -1821,6 +2001,8 @@ function parseArgs(): Args {
             console.log(`  --dry-run                    Simulate run with mock scores, no API calls`);
             console.log(`  --judge-informed             Disable blind mode (show exec status to judges)`);
             console.log(`  --no-debate                  Skip R2 debate + tie-breaker (R1 scores only)`);
+            console.log(`  --no-judge                   Skip judge evaluation entirely (generation + exec only)`);
+            console.log(`  --judge-strategy scoring|binary  Judge strategy: scoring (default) or binary`);
             console.log(`  --rejudge-from <path.json>   Re-judge from existing report (new judge settings)`);
             console.log(`  --merge <p1.json,p2.json>    Merge multiple reports (dedup by run+taskId)`);
             console.log(`  --offset N                   Skip first N tasks (default: 0)`);
@@ -1837,7 +2019,7 @@ function parseArgs(): Args {
         configs, limit, runs, maxIter, timeout,
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
         tiebreakerModel, tau, seed, tasks, resume, dryRun, judgeBlind, noDebate,
-        rejudgeFrom, merge, offset, checkpointFile, dataset,
+        rejudgeFrom, merge, offset, checkpointFile, dataset, noJudge, judgeStrategy,
     };
 }
 
@@ -1860,9 +2042,11 @@ async function main(): Promise<void> {
         console.log(`\nMERGE MODE: combining ${paths.length} reports...`);
         const allMergedResults: TaskResult[] = [];
         const seen = new Set<string>();
+        let mergedDataset = '';
         for (const p of paths) {
             if (!fs.existsSync(p)) { console.error(`ERROR: file not found: ${p}`); process.exit(1); }
             const raw: PaperReport = JSON.parse(fs.readFileSync(p, 'utf-8'));
+            if (!mergedDataset && raw.meta?.dataset) mergedDataset = raw.meta.dataset;
             for (const t of raw.tasks) {
                 const key = `${t.run}:${t.taskId}`;
                 if (!seen.has(key)) {
@@ -1900,7 +2084,7 @@ async function main(): Promise<void> {
         const report: PaperReport = {
             meta: {
                 date: new Date().toISOString(),
-                dataset: 'MBPP+ (EvalPlus) — MERGED',
+                dataset: (mergedDataset || 'MBPP+ (EvalPlus)') + ' — MERGED',
                 gen1Model: 'various', gen2Model: 'various',
                 claudeJudgeModel: 'various', openaiJudgeModel: 'various',
                 tiebreakerModel: 'various',
@@ -1964,10 +2148,18 @@ async function main(): Promise<void> {
 
             let judgeAudit: JudgeAudit;
             if (outputs.some(o => o.code.length > 0)) {
-                judgeAudit = await evaluateWithPanel(
-                    taskPrompt, outputs, opts.timeout, judgeModels,
-                    opts.tiebreakerModel, opts.tau, opts.judgeBlind, opts.noDebate,
-                );
+                if (opts.judgeStrategy === 'binary') {
+                    const entryPoint = srcTask.entryPoint || srcTask.taskId.replace(/.*\//, 'task');
+                    judgeAudit = await evaluateWithBinaryStrategy(
+                        taskPrompt, entryPoint, outputs,
+                        opts.timeout, judgeModels, opts.tiebreakerModel,
+                    );
+                } else {
+                    judgeAudit = await evaluateWithPanel(
+                        taskPrompt, outputs, opts.timeout, judgeModels,
+                        opts.tiebreakerModel, opts.tau, opts.judgeBlind, opts.noDebate,
+                    );
+                }
             } else {
                 const empty: Partial<Record<BenchConfig, QualityScores>> = {};
                 judgeAudit = {
@@ -2043,7 +2235,7 @@ async function main(): Promise<void> {
         const report: PaperReport = {
             meta: {
                 date: new Date().toISOString(),
-                dataset: 'MBPP+ (EvalPlus) — REJUDGED from ' + path.basename(opts.rejudgeFrom),
+                dataset: (source.meta?.dataset || 'MBPP+ (EvalPlus)') + ' — REJUDGED from ' + path.basename(opts.rejudgeFrom),
                 gen1Model: source.meta.gen1Model, gen2Model: source.meta.gen2Model,
                 claudeJudgeModel: opts.claudeJudgeModel, openaiJudgeModel: opts.openaiJudgeModel,
                 tiebreakerModel: opts.tiebreakerModel,
@@ -2053,6 +2245,7 @@ async function main(): Promise<void> {
                 configs: mergedConfigs,
                 runs: mergedRuns,
                 judgeBlind: opts.judgeBlind, noDebate: opts.noDebate,
+                judgeStrategy: opts.judgeStrategy,
             },
             tasks: allResults.map(r => ({
                 ...r,
@@ -2136,8 +2329,9 @@ async function main(): Promise<void> {
     console.log(`  Tie-breaker : ${opts.tiebreakerModel} (Google AI) ${hasGemini ? 'OK' : 'MISSING'}`);
     console.log(`  Seed        : ${opts.seed}`);
     console.log(`  Tau         : ${opts.tau} (absolute /10)`);
-    console.log(`  Judge mode  : ${opts.judgeBlind ? 'BLIND (default)' : 'INFORMED (ablation)'}`);
-    console.log(`  Debate      : ${opts.noDebate ? 'OFF (R1 only, no escalation)' : 'ON (R1 \u2192 R2 \u2192 TB on divergence)'}`);
+    console.log(`  Judge mode  : ${opts.noJudge ? 'OFF (--no-judge)' : opts.judgeBlind ? 'BLIND (default)' : 'INFORMED (ablation)'}`);
+    console.log(`  Strategy    : ${opts.judgeStrategy} ${opts.judgeStrategy === 'binary' ? '(B — pass/fail per candidate)' : '(A — scoring absolu)'}`);
+    console.log(`  Debate      : ${opts.noJudge ? 'N/A' : opts.noDebate ? 'OFF (R1 only, no escalation)' : 'ON (R1 \u2192 R2 \u2192 TB on divergence)'}`);
     if (opts.offset > 0) console.log(`  Offset      : ${opts.offset} (skip first ${opts.offset} tasks)`);
     console.log(`  Configs     : ${opts.configs.map(c => CONFIG_SHORT[c]).join(', ')}`);
     console.log(`  Tasks       : ${selectedTasks.length} / ${allTasks.length} ${datasetLabel} problems`);
@@ -2148,7 +2342,7 @@ async function main(): Promise<void> {
     if (opts.dryRun) { console.log(`  Mode        : DRY-RUN (mock scores via PRNG, zero API calls)`); }
     console.log('');
 
-    if (!opts.dryRun) {
+    if (!opts.dryRun && !opts.noJudge) {
         if (!hasAnthropic) { console.error('ERROR: Set ANTHROPIC_API_KEY.'); process.exit(1); }
         if (!hasOpenAI) { console.error('ERROR: Set OPENAI_API_KEY.'); process.exit(1); }
     }
@@ -2325,18 +2519,29 @@ async function main(): Promise<void> {
 
                 const withCode = configResults.filter(c => c.generatedCode.length > 0);
 
-                if (withCode.length > 0) {
-                    process.stdout.write('  Judges  ');
-                    judgeAudit = await evaluateWithPanel(
-                        task.prompt,
-                        withCode.map(c => ({ config: c.config, code: c.generatedCode, execStatus: c.execStatus })),
-                        opts.timeout,
-                        judgeModels,
-                        opts.tiebreakerModel,
-                        opts.tau,
-                        opts.judgeBlind,
-                        opts.noDebate,
-                    );
+                if (opts.noJudge) {
+                    const empty: Partial<Record<BenchConfig, QualityScores>> = {};
+                    judgeAudit = {
+                        round1: [], divergenceDetected: false, tiebreakerUsed: false,
+                        j0: empty, j1: empty, j2: empty, finalScores: empty,
+                    };
+                    console.log('  Judges  SKIPPED (--no-judge)');
+                } else if (withCode.length > 0) {
+                    process.stdout.write(`  Judges [${opts.judgeStrategy}]  `);
+                    if (opts.judgeStrategy === 'binary') {
+                        judgeAudit = await evaluateWithBinaryStrategy(
+                            task.prompt, task.entry_point,
+                            withCode.map(c => ({ config: c.config, code: c.generatedCode, execStatus: c.execStatus })),
+                            opts.timeout, judgeModels, opts.tiebreakerModel,
+                        );
+                    } else {
+                        judgeAudit = await evaluateWithPanel(
+                            task.prompt,
+                            withCode.map(c => ({ config: c.config, code: c.generatedCode, execStatus: c.execStatus })),
+                            opts.timeout, judgeModels,
+                            opts.tiebreakerModel, opts.tau, opts.judgeBlind, opts.noDebate,
+                        );
+                    }
 
                     const scores = opts.configs
                         .filter(c => judgeAudit.finalScores[c])
@@ -2356,13 +2561,15 @@ async function main(): Promise<void> {
                 }
             }
 
-            // Circuit-breaker: check if judge produced scores
+            // Circuit-breaker: check if judge produced scores (skip when --no-judge)
             const hasScores = Object.keys(judgeAudit.finalScores).length > 0;
             const r1AllFailed = judgeAudit.round1.length === 0;
 
-            if (!opts.dryRun && !r1AllFailed && hasScores) {
+            if (opts.noJudge || opts.dryRun) {
                 consecutiveJudgeFailures = 0;
-            } else if (!opts.dryRun && (r1AllFailed || !hasScores)) {
+            } else if (!r1AllFailed && hasScores) {
+                consecutiveJudgeFailures = 0;
+            } else if (r1AllFailed || !hasScores) {
                 consecutiveJudgeFailures++;
                 console.error(`  \u26a0 Judge failure ${consecutiveJudgeFailures}/${MAX_JUDGE_FAILURES} — task will be retried on --resume`);
 
@@ -2376,9 +2583,6 @@ async function main(): Promise<void> {
                 }
                 console.log('-'.repeat(70));
                 continue;
-            } else {
-                // dry-run: always succeeds
-                consecutiveJudgeFailures = 0;
             }
 
             allResults.push({
@@ -2535,6 +2739,8 @@ async function main(): Promise<void> {
             runs: opts.runs,
             judgeBlind: opts.judgeBlind,
             noDebate: opts.noDebate,
+            noJudge: opts.noJudge,
+            judgeStrategy: opts.judgeStrategy,
         },
         tasks: allResults.map(r => ({
             ...r,

@@ -4,9 +4,9 @@
   <a href="https://doi.org/10.5281/zenodo.18704886"><img src="https://zenodo.org/badge/1162069048.svg" alt="DOI"></a>
 </p>
 
-# DEBATE EXT v1.0
+# DEBATE EXT v2.0.0
 
-> **debate_ext v1.0** — Multi-agent code generation & evaluation framework
+> **debate_ext v2.0.0** — Multi-agent code generation & evaluation framework
 
 AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code.
 Includes a paper-grade benchmark suite that evaluates inter-LLM collaboration quality.
@@ -18,7 +18,7 @@ debate_ext/
   vscode-extension/    ← VS Code extension (TypeScript)
     src/               ← Extension source + benchmark suites
     scripts/           ← smoke.js, setup_mbppplus.py, setup_humanevalplus.py
-    data/              ← MbppPlus.jsonl (378 MBPP+ tasks)
+    data/              ← MbppPlus.jsonl (378 MBPP+ tasks), HumanEvalPlus.jsonl (164 HumanEval+ tasks)
   tools/               ← Python auxiliary scripts
   scripts/             ← Root-level scripts
 ```

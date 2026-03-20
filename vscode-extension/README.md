@@ -11,7 +11,7 @@ AI debate orchestrator: two LLM generators collaborate via structured debate, ev
 
 ## Prerequisites
 
-- **Node.js**: v16 or higher.
+- **Node.js**: v18 or higher.
 - **Python 3.8+**: Required for benchmark data setup.
 
 ## Development

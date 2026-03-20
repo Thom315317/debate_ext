@@ -2,7 +2,7 @@
   "name": "debate-ext",
   "displayName": "DEBATE EXT",
   "description": "AI debate orchestrator — Claude + OpenAI collaborate via API keys to produce robust code",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "publisher": "debate-ext",
   "icon": "media/icon.svg",
   "engines": {
@@ -170,6 +170,7 @@
     "benchmark": "npm run compile && node out/benchmark.js",
     "bench2": "npm run compile && node out/benchmark_v2.js",
     "bench:mbppplus": "npm run compile && node out/benchmark_paper.js",
+    "bench:pair2": "npm run compile && node out/benchmark_paper_pair2.js",
     "smoke": "npm run compile && node scripts/smoke.js",
     "test": "node test/unit.test.js"
   },
