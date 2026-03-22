@@ -188,6 +188,9 @@ interface PaperReport {
         noDebate: boolean;
         noJudge?: boolean;
         judgeStrategy?: 'scoring' | 'binary';
+        judgeProvider?: 'api' | 'ollama';
+        judge1Model?: string;
+        judge2Model?: string;
         rejudgedFrom?: string;
         mergedFrom?: string[];
     };
@@ -413,6 +416,44 @@ function callOllama(prompt: string, timeoutMs: number, model: string, agentColor
         });
         req.on('error', (err) => finish({ content: '', error: String(err) }));
         const timer = setTimeout(() => { req.destroy(); finish({ content: '', error: `Timeout ${timeoutMs}ms` }); }, timeoutMs);
+        req.write(body); req.end();
+    });
+}
+
+// Non-streaming Ollama call for judge evaluation (no ANSI output)
+function callOllamaJudge(prompt: string, timeoutMs: number, model: string, maxTokens: number = 16384): Promise<ApiResult> {
+    return new Promise((resolve) => {
+        const body = JSON.stringify({
+            model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, max_tokens: maxTokens, stream: false,
+        });
+        const req = http.request({
+            hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: '/v1/chat/completions', method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        }, (res) => {
+            let data = '';
+            res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.error) {
+                        resolve({ content: '', error: String(json.error) });
+                        return;
+                    }
+                    const content = json.choices?.[0]?.message?.content ?? '';
+                    const tokens: TokenUsage = {
+                        provider: 'ollama',
+                        promptTokens: json.usage?.prompt_tokens ?? Math.ceil(prompt.length / 4),
+                        completionTokens: json.usage?.completion_tokens ?? Math.ceil(content.length / 4),
+                        totalTokens: (json.usage?.prompt_tokens ?? 0) + (json.usage?.completion_tokens ?? 0),
+                    };
+                    trackTokens(tokens);
+                    resolve({ content, tokens });
+                } catch { resolve({ content: '', error: `Invalid JSON: ${data.slice(0, 200)}` }); }
+            });
+        });
+        req.on('error', (err) => resolve({ content: '', error: String(err) }));
+        const timer = setTimeout(() => { req.destroy(); resolve({ content: '', error: `Timeout ${timeoutMs}ms` }); }, timeoutMs);
+        req.on('close', () => clearTimeout(timer));
         req.write(body); req.end();
     });
 }
@@ -1126,8 +1167,8 @@ async function evaluateWithBinaryStrategy(
     entryPoint: string,
     outputs: { config: BenchConfig; code: string; execStatus: ExecStatus }[],
     timeout: number,
-    judgeModels: { claude: string; openai: string },
-    tiebreakerModel: string,
+    judges: JudgeCaller[],
+    tbCall: (p: string, t: number) => Promise<ApiResult>,
 ): Promise<JudgeAudit> {
     const valid = outputs.filter(o => o.code.length > 0);
 
@@ -1146,11 +1187,6 @@ async function evaluateWithBinaryStrategy(
         for (const cfg of cfgs.slice(1)) dupMap.set(cfg, repr);
     }
     if (dupMap.size > 0) process.stdout.write(`[DEDUP:${valid.length}->${unique.length}] `);
-
-    const judges: { name: string; call: (p: string, t: number) => Promise<ApiResult> }[] = [
-        { name: 'Claude', call: (p, t) => callClaude(p, t, judgeModels.claude) },
-        { name: 'GPT', call: (p, t) => callOpenAI(p, t, judgeModels.openai) },
-    ];
 
     const binaryVerdicts: Partial<Record<BenchConfig, { pass: boolean; confidence: number; reason: string }[]>> = {};
     const finalScores: Partial<Record<BenchConfig, QualityScores>> = {};
@@ -1175,7 +1211,7 @@ async function evaluateWithBinaryStrategy(
 
         // Tie-breaker on divergence
         if (divergent) {
-            const tbResult = await callGemini(prompt, timeout, tiebreakerModel);
+            const tbResult = await tbCall(prompt, timeout);
             const tbParsed = parseBinaryResponse(tbResult.content);
             if (tbParsed) {
                 verdicts.push(tbParsed);
@@ -1224,8 +1260,8 @@ async function evaluateWithPanel(
     taskPrompt: string,
     outputs: { config: BenchConfig; code: string; execStatus: ExecStatus }[],
     timeout: number,
-    judgeModels: { claude: string; openai: string },
-    tiebreakerModel: string,
+    judges: JudgeCaller[],
+    tbCall: (p: string, t: number) => Promise<ApiResult>,
     tau: number = DIVERGENCE_TAU,
     blind: boolean = true,
     noDebate: boolean = false,
@@ -1267,11 +1303,6 @@ async function evaluateWithPanel(
         shuffled.map((s, i) => ({ label: labels[i], code: s.code, execStatus: s.execStatus })),
         blind,
     );
-
-    const judges: JudgeCaller[] = [
-        { name: 'Claude', call: (p, t) => callClaude(p, t, judgeModels.claude) },
-        { name: 'GPT', call: (p, t) => callOpenAI(p, t, judgeModels.openai) },
-    ];
 
     // Convert label-keyed scores to config-keyed, propagating to duplicates
     function labelToConfig(scores: Record<string, QualityScores>): Partial<Record<BenchConfig, QualityScores>> {
@@ -1403,13 +1434,13 @@ async function evaluateWithPanel(
     let tiebreakerUsed = false;
     let tiebreakerError: string | undefined;
 
-    if (stillDivergent.length > 0 && tiebreakerModel) {
+    if (stillDivergent.length > 0 && tbCall) {
         const tbLabels = stillDivergent.map(l => `${l}(${CONFIG_SHORT[labelMap.get(l)!]})`);
         process.stdout.write(`[TB: ${tbLabels.join(',')}] `);
         tiebreakerUsed = true;
 
         try {
-            const tbResult = await callGemini(evalPrompt, timeout, tiebreakerModel);
+            const tbResult = await tbCall(evalPrompt, timeout);
             if (tbResult.error) {
                 tiebreakerError = tbResult.error;
                 process.stdout.write(`[TB-ERR: ${tbResult.error.slice(0, 40)}] `);
@@ -1910,7 +1941,10 @@ interface Args {
     gen2Model: string;
     claudeJudgeModel: string;
     openaiJudgeModel: string;
+    judge1Model: string;
+    judge2Model: string;
     tiebreakerModel: string;
+    judgeProvider: 'api' | 'ollama';
     tau: number;
     seed: number;
     tasks: string[];
@@ -1938,7 +1972,10 @@ function parseArgs(): Args {
     let gen2Model = 'deepseek-v3.1:671b-cloud';
     let claudeJudgeModel = 'claude-sonnet-4-5-20250929';
     let openaiJudgeModel = 'gpt-4.1';
+    let judge1Model = 'kimi-k2.5:cloud';
+    let judge2Model = 'gemini-3-flash-preview:cloud';
     let tiebreakerModel = 'gemini-2.5-pro';
+    let judgeProvider: 'api' | 'ollama' = 'api';
     let tau = 2.0;
     let seed = 42;
     let tasks: string[] = [];
@@ -1965,6 +2002,9 @@ function parseArgs(): Args {
         else if (args[i] === '--claude-judge-model' && args[i + 1]) claudeJudgeModel = args[++i];
         else if (args[i] === '--openai-judge-model' && args[i + 1]) openaiJudgeModel = args[++i];
         else if (args[i] === '--tiebreaker-model' && args[i + 1]) tiebreakerModel = args[++i];
+        else if (args[i] === '--judge1-model' && args[i + 1]) judge1Model = args[++i];
+        else if (args[i] === '--judge2-model' && args[i + 1]) judge2Model = args[++i];
+        else if (args[i] === '--judge-provider' && args[i + 1]) judgeProvider = args[++i] as 'api' | 'ollama';
         else if (args[i] === '--judge-threshold' && args[i + 1]) tau = parseFloat(args[++i]);
         else if (args[i] === '--seed' && args[i + 1]) seed = parseInt(args[++i], 10);
         else if (args[i] === '--tasks' && args[i + 1]) tasks = args[++i].split(',');
@@ -1995,6 +2035,9 @@ function parseArgs(): Args {
             console.log(`  --claude-judge-model MODEL   Claude judge (default: claude-sonnet-4-5-20250929)`);
             console.log(`  --openai-judge-model MODEL   GPT judge (default: gpt-4.1)`);
             console.log(`  --tiebreaker-model MODEL     Tie-breaker (default: gemini-2.5-pro)`);
+            console.log(`  --judge1-model MODEL         Judge 1 for Ollama provider (default: kimi-k2.5:cloud)`);
+            console.log(`  --judge2-model MODEL         Judge 2 for Ollama provider (default: gemini-3-flash-preview:cloud)`);
+            console.log(`  --judge-provider api|ollama  Judge provider (default: api)`);
             console.log(`  --judge-threshold N          Divergence tau, absolute /10 (default: 2.0)`);
             console.log(`  --seed N                     PRNG seed (default: 42)`);
             console.log(`  --resume                     Resume from last checkpoint`);
@@ -2020,6 +2063,7 @@ function parseArgs(): Args {
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
         tiebreakerModel, tau, seed, tasks, resume, dryRun, judgeBlind, noDebate,
         rejudgeFrom, merge, offset, checkpointFile, dataset, noJudge, judgeStrategy,
+        judge1Model, judge2Model, judgeProvider,
     };
 }
 
@@ -2121,7 +2165,18 @@ async function main(): Promise<void> {
         console.log(`  Debate      : ${opts.noDebate ? 'OFF' : 'ON'}`);
         console.log(`  Tau         : ${opts.tau}`);
 
-        const judgeModels = { claude: opts.claudeJudgeModel, openai: opts.openaiJudgeModel };
+        const judges: JudgeCaller[] = opts.judgeProvider === 'ollama'
+            ? [
+                { name: 'Judge1', call: (p, t) => callOllamaJudge(p, t, opts.judge1Model) },
+                { name: 'Judge2', call: (p, t) => callOllamaJudge(p, t, opts.judge2Model) },
+            ]
+            : [
+                { name: 'Claude', call: (p, t) => callClaude(p, t, opts.claudeJudgeModel) },
+                { name: 'GPT', call: (p, t) => callOpenAI(p, t, opts.openaiJudgeModel) },
+            ];
+        const tbCall = opts.judgeProvider === 'ollama'
+            ? (p: string, t: number) => callOllamaJudge(p, t, opts.tiebreakerModel)
+            : (p: string, t: number) => callGemini(p, t, opts.tiebreakerModel);
         const rejudgedResults: TaskResult[] = [];
         const rejudgeFingerprint = 'rejudge:' + opts.rejudgeFrom;
         const rejudgeCheckpoint = loadCheckpoint(rejudgeFingerprint);
@@ -2152,12 +2207,12 @@ async function main(): Promise<void> {
                     const entryPoint = srcTask.entryPoint || srcTask.taskId.replace(/.*\//, 'task');
                     judgeAudit = await evaluateWithBinaryStrategy(
                         taskPrompt, entryPoint, outputs,
-                        opts.timeout, judgeModels, opts.tiebreakerModel,
+                        opts.timeout, judges, tbCall,
                     );
                 } else {
                     judgeAudit = await evaluateWithPanel(
-                        taskPrompt, outputs, opts.timeout, judgeModels,
-                        opts.tiebreakerModel, opts.tau, opts.judgeBlind, opts.noDebate,
+                        taskPrompt, outputs, opts.timeout, judges,
+                        tbCall, opts.tau, opts.judgeBlind, opts.noDebate,
                     );
                 }
             } else {
@@ -2246,6 +2301,9 @@ async function main(): Promise<void> {
                 runs: mergedRuns,
                 judgeBlind: opts.judgeBlind, noDebate: opts.noDebate,
                 judgeStrategy: opts.judgeStrategy,
+                judgeProvider: opts.judgeProvider,
+                judge1Model: opts.judgeProvider === 'ollama' ? opts.judge1Model : undefined,
+                judge2Model: opts.judgeProvider === 'ollama' ? opts.judge2Model : undefined,
             },
             tasks: allResults.map(r => ({
                 ...r,
@@ -2268,7 +2326,18 @@ async function main(): Promise<void> {
     }
 
     const genModels = { gen1: opts.gen1Model, gen2: opts.gen2Model };
-    const judgeModels = { claude: opts.claudeJudgeModel, openai: opts.openaiJudgeModel };
+    const judges: JudgeCaller[] = opts.judgeProvider === 'ollama'
+        ? [
+            { name: 'Judge1', call: (p, t) => callOllamaJudge(p, t, opts.judge1Model) },
+            { name: 'Judge2', call: (p, t) => callOllamaJudge(p, t, opts.judge2Model) },
+        ]
+        : [
+            { name: 'Claude', call: (p, t) => callClaude(p, t, opts.claudeJudgeModel) },
+            { name: 'GPT', call: (p, t) => callOpenAI(p, t, opts.openaiJudgeModel) },
+        ];
+    const tbCall = opts.judgeProvider === 'ollama'
+        ? (p: string, t: number) => callOllamaJudge(p, t, opts.tiebreakerModel)
+        : (p: string, t: number) => callGemini(p, t, opts.tiebreakerModel);
     _rng = mulberry32(opts.seed);
 
     // Load MBPP+
@@ -2324,9 +2393,15 @@ async function main(): Promise<void> {
     console.log(`  Dataset     : ${opts.dataset === 'humaneval' ? 'HumanEval+ (EvalPlus)' : 'MBPP+ (EvalPlus)'}`);
     console.log(`  Generator 1 : ${opts.gen1Model} (Ollama)`);
     console.log(`  Generator 2 : ${opts.gen2Model} (Ollama)`);
-    console.log(`  Judge 1     : ${opts.claudeJudgeModel} (Anthropic) ${hasAnthropic ? 'OK' : 'MISSING'}`);
-    console.log(`  Judge 2     : ${opts.openaiJudgeModel} (OpenAI) ${hasOpenAI ? 'OK' : 'MISSING'}`);
-    console.log(`  Tie-breaker : ${opts.tiebreakerModel} (Google AI) ${hasGemini ? 'OK' : 'MISSING'}`);
+    if (opts.judgeProvider === 'ollama') {
+        console.log(`  Judge 1     : ${opts.judge1Model} (Ollama Cloud)`);
+        console.log(`  Judge 2     : ${opts.judge2Model} (Ollama Cloud)`);
+        console.log(`  Tie-breaker : ${opts.tiebreakerModel} (Ollama Cloud)`);
+    } else {
+        console.log(`  Judge 1     : ${opts.claudeJudgeModel} (Anthropic) ${hasAnthropic ? 'OK' : 'MISSING'}`);
+        console.log(`  Judge 2     : ${opts.openaiJudgeModel} (OpenAI) ${hasOpenAI ? 'OK' : 'MISSING'}`);
+        console.log(`  Tie-breaker : ${opts.tiebreakerModel} (Google AI) ${hasGemini ? 'OK' : 'MISSING'}`);
+    }
     console.log(`  Seed        : ${opts.seed}`);
     console.log(`  Tau         : ${opts.tau} (absolute /10)`);
     console.log(`  Judge mode  : ${opts.noJudge ? 'OFF (--no-judge)' : opts.judgeBlind ? 'BLIND (default)' : 'INFORMED (ablation)'}`);
@@ -2342,7 +2417,7 @@ async function main(): Promise<void> {
     if (opts.dryRun) { console.log(`  Mode        : DRY-RUN (mock scores via PRNG, zero API calls)`); }
     console.log('');
 
-    if (!opts.dryRun && !opts.noJudge) {
+    if (!opts.dryRun && !opts.noJudge && opts.judgeProvider === 'api') {
         if (!hasAnthropic) { console.error('ERROR: Set ANTHROPIC_API_KEY.'); process.exit(1); }
         if (!hasOpenAI) { console.error('ERROR: Set OPENAI_API_KEY.'); process.exit(1); }
     }
@@ -2532,14 +2607,14 @@ async function main(): Promise<void> {
                         judgeAudit = await evaluateWithBinaryStrategy(
                             task.prompt, task.entry_point,
                             withCode.map(c => ({ config: c.config, code: c.generatedCode, execStatus: c.execStatus })),
-                            opts.timeout, judgeModels, opts.tiebreakerModel,
+                            opts.timeout, judges, tbCall,
                         );
                     } else {
                         judgeAudit = await evaluateWithPanel(
                             task.prompt,
                             withCode.map(c => ({ config: c.config, code: c.generatedCode, execStatus: c.execStatus })),
-                            opts.timeout, judgeModels,
-                            opts.tiebreakerModel, opts.tau, opts.judgeBlind, opts.noDebate,
+                            opts.timeout, judges,
+                            tbCall, opts.tau, opts.judgeBlind, opts.noDebate,
                         );
                     }
 
@@ -2741,6 +2816,9 @@ async function main(): Promise<void> {
             noDebate: opts.noDebate,
             noJudge: opts.noJudge,
             judgeStrategy: opts.judgeStrategy,
+            judgeProvider: opts.judgeProvider,
+            judge1Model: opts.judgeProvider === 'ollama' ? opts.judge1Model : undefined,
+            judge2Model: opts.judgeProvider === 'ollama' ? opts.judge2Model : undefined,
         },
         tasks: allResults.map(r => ({
             ...r,
