@@ -424,7 +424,7 @@ function callOllama(prompt: string, timeoutMs: number, model: string, agentColor
 function callOllamaJudge(prompt: string, timeoutMs: number, model: string, maxTokens: number = 16384): Promise<ApiResult> {
     return new Promise((resolve) => {
         const body = JSON.stringify({
-            model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, max_tokens: maxTokens, stream: false,
+            model, messages: [{ role: 'user', content: prompt }], temperature: 0.2, max_tokens: maxTokens, stream: false, think: false,
         });
         const req = http.request({
             hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: '/v1/chat/completions', method: 'POST',
@@ -551,21 +551,34 @@ function extractPythonCode(response: string): string {
     let inFunction = false;
     const extracted: string[] = [];
     const imports: string[] = [];
+    const pending: string[] = []; // buffer blank lines — only flush if followed by valid content
 
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
         if (!inFunction && /^(import\s|from\s)/.test(line)) {
             imports.push(line);
-        } else if (!inFunction && /^def\s+\w+/.test(line)) {
+        } else if (!inFunction && (/^def\s+\w+/.test(line) || /^@\w+/.test(line))) {
             inFunction = true;
             extracted.push(line);
         } else if (inFunction) {
-            if (line.trim() === '' || /^\s+/.test(line)) {
-                extracted.push(line);
-            } else if (/^def\s+\w+/.test(line)) {
-                extracted.push(line);
+            if (/^\s+/.test(line)) {
+                // Indented line — part of current function body; flush pending blanks
+                extracted.push(...pending, line);
+                pending.length = 0;
+            } else if (line.trim() === '') {
+                // Blank line — buffer it; only include if followed by def/class/import/decorator
+                pending.push(line);
+            } else if (/^(def\s+\w+|class\s+\w+|@\w+)/.test(line)) {
+                // New top-level def / class / decorator — flush pending, continue
+                extracted.push(...pending, line);
+                pending.length = 0;
             } else if (/^(import\s|from\s)/.test(line)) {
+                pending.length = 0;
                 imports.push(line);
             } else {
+                // Orphan code at indent 0 (assertions, prints, bare expressions) — stop
+                pending.length = 0;
                 break;
             }
         }
@@ -1953,6 +1966,7 @@ interface Args {
     judgeBlind: boolean;
     noDebate: boolean;
     rejudgeFrom: string | null;
+    reextract: string | null;
     merge: string | null;
     offset: number;
     checkpointFile: string | null;
@@ -1974,7 +1988,7 @@ function parseArgs(): Args {
     let openaiJudgeModel = 'gpt-4.1';
     let judge1Model = 'kimi-k2.5:cloud';
     let judge2Model = 'gemini-3-flash-preview:cloud';
-    let tiebreakerModel = 'gemini-2.5-pro';
+    let tiebreakerModel = 'glm-5:cloud';
     let judgeProvider: 'api' | 'ollama' = 'api';
     let tau = 2.0;
     let seed = 42;
@@ -1984,6 +1998,7 @@ function parseArgs(): Args {
     let judgeBlind = true;
     let noDebate = false;
     let rejudgeFrom: string | null = null;
+    let reextract: string | null = null;
     let merge: string | null = null;
     let offset = 0;
     let checkpointFile: string | null = null;
@@ -2013,6 +2028,7 @@ function parseArgs(): Args {
         else if (args[i] === '--judge-informed') judgeBlind = false;
         else if (args[i] === '--no-debate') noDebate = true;
         else if (args[i] === '--rejudge-from' && args[i + 1]) rejudgeFrom = args[++i];
+        else if (args[i] === '--reextract' && args[i + 1]) reextract = args[++i];
         else if (args[i] === '--merge' && args[i + 1]) merge = args[++i];
         else if (args[i] === '--offset' && args[i + 1]) offset = parseInt(args[++i], 10);
         else if (args[i] === '--checkpoint-file' && args[i + 1]) checkpointFile = args[++i];
@@ -2046,6 +2062,7 @@ function parseArgs(): Args {
             console.log(`  --no-debate                  Skip R2 debate + tie-breaker (R1 scores only)`);
             console.log(`  --no-judge                   Skip judge evaluation entirely (generation + exec only)`);
             console.log(`  --judge-strategy scoring|binary  Judge strategy: scoring (default) or binary`);
+            console.log(`  --reextract <path.json>       Re-extract code + re-execute tests (fix orphan lines)`);
             console.log(`  --rejudge-from <path.json>   Re-judge from existing report (new judge settings)`);
             console.log(`  --merge <p1.json,p2.json>    Merge multiple reports (dedup by run+taskId)`);
             console.log(`  --offset N                   Skip first N tasks (default: 0)`);
@@ -2062,7 +2079,7 @@ function parseArgs(): Args {
         configs, limit, runs, maxIter, timeout,
         gen1Model, gen2Model, claudeJudgeModel, openaiJudgeModel,
         tiebreakerModel, tau, seed, tasks, resume, dryRun, judgeBlind, noDebate,
-        rejudgeFrom, merge, offset, checkpointFile, dataset, noJudge, judgeStrategy,
+        rejudgeFrom, reextract, merge, offset, checkpointFile, dataset, noJudge, judgeStrategy,
         judge1Model, judge2Model, judgeProvider,
     };
 }
@@ -2121,7 +2138,7 @@ async function main(): Promise<void> {
             if (calls.length > 0) {
                 const avg = calls.reduce((a, b) => a + b, 0) / calls.length;
                 const qpc = (avgQuality[cfg] ?? 0) / avg;
-                const ppc = (passAt1[cfg] ?? 0) / avg;
+                const ppc = (passAt1Plus[cfg] ?? passAt1[cfg] ?? 0) / avg;
                 costEfficiency[cfg] = { avgCalls: parseFloat(avg.toFixed(1)), qualityPerCall: parseFloat(qpc.toFixed(2)), passPerCall: parseFloat(ppc.toFixed(2)) };
             }
         }
@@ -2148,7 +2165,102 @@ async function main(): Promise<void> {
         const reportPath = path.join(resultsDir, `bench_paper_merged_${ts}.json`);
         fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
         console.log(`\n  Merged report saved to: ${reportPath}`);
-        console.log(`  pass@1: ${JSON.stringify(passAt1)}`);
+        console.log(`  pass@1  (base):    ${JSON.stringify(passAt1)}`);
+        console.log(`  pass@1+ (strict):  ${JSON.stringify(passAt1Plus)}  ← métrique canonique`);
+        process.exit(0);
+    }
+
+    // ─── --reextract mode ───
+    if (opts.reextract) {
+        if (!fs.existsSync(opts.reextract)) {
+            console.error(`ERROR: source report not found: ${opts.reextract}`);
+            process.exit(1);
+        }
+        const source: PaperReport = JSON.parse(fs.readFileSync(opts.reextract, 'utf-8'));
+        const dataset = source.meta?.dataset?.toLowerCase().includes('humaneval') ? 'humaneval' : 'mbpp';
+        const dataFile = dataset === 'humaneval' ? 'HumanEvalPlus.jsonl' : 'MbppPlus.jsonl';
+        const dataPath = path.join(__dirname, '..', 'data', dataFile);
+        if (!fs.existsSync(dataPath)) {
+            console.error(`ERROR: data file not found: ${dataPath}`);
+            process.exit(1);
+        }
+        const taskData = loadMbppPlus(dataPath);
+        const taskMap = new Map(taskData.map(t => [t.task_id, t]));
+
+        console.log(`\nREEXTRACT MODE: re-extracting + re-executing ${source.tasks.length} results from ${path.basename(opts.reextract)}`);
+        console.log(`  Dataset: ${source.meta?.dataset}  Data file: ${dataFile}`);
+
+        let modified = 0;
+        let improved = 0;
+        let nameErrorsBefore = 0;
+        let nameErrorsAfter = 0;
+
+        for (let ti = 0; ti < source.tasks.length; ti++) {
+            const task = source.tasks[ti];
+            const data = taskMap.get(task.taskId);
+            if (!data) continue;
+
+            for (const cfg of task.configs) {
+                const oldCode = cfg.generatedCode;
+                const hadNameError = cfg.execOutput.includes('NameError');
+                if (hadNameError) nameErrorsBefore++;
+
+                // Re-extract
+                const newCode = extractPythonCode(oldCode);
+                if (newCode === oldCode) {
+                    if (hadNameError) nameErrorsAfter++;
+                    continue;
+                }
+
+                modified++;
+                // Re-execute base tests
+                const execBase = await executeCode(newCode, data.test_list, data.test_setup_code);
+                cfg.generatedCode = newCode;
+                cfg.execStatus = execBase.status;
+                cfg.execOutput = execBase.output;
+                cfg.execTimeMs = execBase.timeMs;
+
+                // Re-execute plus tests
+                if (data.test_list_plus && data.test_list_plus.length > 0) {
+                    const execPlus = await executeCode(newCode, data.test_list_plus, data.test_setup_code);
+                    cfg.execStatusPlus = execPlus.status;
+                    cfg.execOutputPlus = execPlus.output;
+                    cfg.execTimeMsPlus = execPlus.timeMs;
+                }
+
+                const hasNameErrorNow = cfg.execOutput.includes('NameError');
+                if (hasNameErrorNow) nameErrorsAfter++;
+                if (hadNameError && !hasNameErrorNow) improved++;
+            }
+
+            if ((ti + 1) % 100 === 0) {
+                console.log(`  Progress: ${ti + 1}/${source.tasks.length}  modified=${modified}  improved=${improved}`);
+            }
+        }
+
+        // Recompute summary
+        const allConfigs = [...new Set(source.tasks.flatMap(r => r.configs.map(c => c.config)))] as BenchConfig[];
+        const allRuns = new Set(source.tasks.map(r => r.run)).size;
+        const passAt1 = computePassAtK(source.tasks, allConfigs, 1);
+        const passAt1Plus = computePassAtK(source.tasks, allConfigs, 1, true);
+
+        source.meta.dataset = (source.meta.dataset || '') + ' — REEXTRACTED';
+        source.summary = { ...source.summary, passAt1, passAt1Plus };
+
+        const resultsDir = path.join(process.cwd(), 'benchmark-results');
+        fs.mkdirSync(resultsDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const reportPath = path.join(resultsDir, `bench_paper_reextracted_${ts}.json`);
+        fs.writeFileSync(reportPath, JSON.stringify(source, null, 2));
+
+        console.log(`\nREEXTRACT COMPLETE`);
+        console.log(`  Codes modified:    ${modified}`);
+        console.log(`  NameErrors before: ${nameErrorsBefore}`);
+        console.log(`  NameErrors after:  ${nameErrorsAfter}`);
+        console.log(`  Improved:          ${improved}`);
+        console.log(`  pass@1  (base):    ${JSON.stringify(passAt1)}`);
+        console.log(`  pass@1+ (MBPP+):   ${JSON.stringify(passAt1Plus)}  ← métrique canonique`);
+        console.log(`  Report saved to:   ${reportPath}`);
         process.exit(0);
     }
 
@@ -2274,7 +2386,7 @@ async function main(): Promise<void> {
             if (calls.length > 0) {
                 const avg = calls.reduce((a, b) => a + b, 0) / calls.length;
                 const qpc = (avgQuality[cfg] ?? 0) / avg;
-                const ppc = (passAt1[cfg] ?? 0) / avg;
+                const ppc = (passAt1Plus[cfg] ?? passAt1[cfg] ?? 0) / avg;
                 costEfficiency[cfg] = { avgCalls: parseFloat(avg.toFixed(1)), qualityPerCall: parseFloat(qpc.toFixed(2)), passPerCall: parseFloat(ppc.toFixed(2)) };
             }
         }
@@ -2283,7 +2395,8 @@ async function main(): Promise<void> {
         console.log(`\nREJUDGE COMPLETE — ${allResults.length} results re-judged`);
         for (const cfg of mergedConfigs) {
             if (passAt1[cfg] !== undefined) {
-                console.log(`  ${cfg.padEnd(18)} pass@1=${passAt1[cfg]}% quality=${avgQuality[cfg] ?? 'N/A'}/10`);
+                const displayedPass = passAt1Plus[cfg] ?? passAt1[cfg];
+                console.log(`  ${cfg.padEnd(18)} pass@1+=${displayedPass}% quality=${avgQuality[cfg] ?? 'N/A'}/10`);
             }
         }
 
@@ -2723,7 +2836,7 @@ async function main(): Promise<void> {
         if (calls.length > 0) {
             const avg = calls.reduce((a, b) => a + b, 0) / calls.length;
             const qpc = (avgQuality[cfg] ?? 0) / avg;
-            const ppc = (passAt1[cfg] ?? 0) / avg;
+            const ppc = (passAt1Plus[cfg] ?? passAt1[cfg] ?? 0) / avg;
             costEfficiency[cfg] = {
                 avgCalls: parseFloat(avg.toFixed(1)),
                 qualityPerCall: parseFloat(qpc.toFixed(2)),

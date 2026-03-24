@@ -5,9 +5,14 @@
 ### Added
 - `--judge-strategy scoring|binary` flag: scoring (default, existing A) or binary (new B — one pass/fail prediction per candidate)
 - `--no-judge` flag: skip judge evaluation entirely (generation + exec only)
+- `--reextract <path.json>` mode: re-apply `extractPythonCode` on existing results and re-execute tests (no regeneration)
+- `--judge-provider ollama` flag: use Ollama Cloud models as judges instead of proprietary APIs
+- `think: false` in judge Ollama calls to prevent thinking models from consuming token budget
 - Binary strategy B: each judge independently predicts pass/fail with confidence per candidate, tiebreaker on divergence (opposite verdict or |Δconfidence| > 0.3)
 
 ### Fixed
+- **CRITICAL**: `extractPythonCode` kept orphan lines (assertions, bare expressions) after function body, causing NameErrors. Now cuts at first non-def/import/class line at indent 0. All benchmark results re-extracted for consistency.
+- **CRITICAL**: `summary.passAt1` used base tests instead of plus tests. Now `passAt1` = `passAt1Plus` (strict EvalPlus tests). All reextracted summaries corrected.
 - **CRITICAL**: Claude judge temperature was absent (API default 1.0). Now explicitly set to 0.2 like GPT and Gemini.
 - `--help` now shows 14 configs (was 8)
 - `--merge` and `--rejudge-from` now use dataset from source file instead of hardcoded MBPP+
@@ -18,6 +23,9 @@
 ### Changed
 - All judges (Claude, GPT, Gemini) now use temperature=0.2 uniformly
 - `judgeStrategy` and `noJudge` saved in report metadata
+- All benchmark results (6 models × 2 datasets) re-extracted with fixed `extractPythonCode` v2.0 for consistency
+- MiniMax M2.7 dropped from v2.0 (108 empty codes from thinking model token budget issue)
+- Default judges: Kimi K2.5 + Gemini 3 Flash Preview (Ollama Cloud), GLM-5 tiebreaker
 
 ## [1.1.1] — 2026-03-15
 

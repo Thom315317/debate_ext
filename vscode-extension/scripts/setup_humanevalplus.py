@@ -36,12 +36,19 @@ def extract_asserts_from_check(test_str: str, entry_point: str) -> list:
     """Extract assert lines from a HumanEval test string containing def check(candidate):."""
     # Replace 'candidate' with the actual function name
     test_str = test_str.replace("candidate", entry_point)
-    # Extract all assert lines
+    # Extract assert statements, joining multi-line continuations
     asserts = []
+    current_assert = ""
     for line in test_str.split("\n"):
         stripped = line.strip()
         if stripped.startswith("assert"):
-            asserts.append(stripped)
+            if current_assert:
+                asserts.append(current_assert)
+            current_assert = stripped
+        elif current_assert and stripped:
+            current_assert += " " + stripped
+    if current_assert:
+        asserts.append(current_assert)
     return asserts
 
 
@@ -83,6 +90,94 @@ def _build_asserts(entry_point: str, inputs: list, canonical_solution: str, cont
         except Exception:
             pass
     return asserts
+
+
+def extract_helper_functions(prompt: str, entry_point: str) -> str:
+    """Extract all function definitions from prompt that are NOT the entry_point."""
+    lines = prompt.split('\n')
+    helpers = []
+    current_func = []
+    in_func = False
+    is_entry = False
+
+    for line in lines:
+        m = re.match(r'^def\s+(\w+)', line)
+        if m:
+            if current_func and not is_entry:
+                helpers.append('\n'.join(current_func))
+            func_name = m.group(1)
+            is_entry = (func_name == entry_point)
+            current_func = [line]
+            in_func = True
+        elif in_func:
+            current_func.append(line)
+
+    if current_func and not is_entry:
+        helpers.append('\n'.join(current_func))
+
+    return '\n\n'.join(helpers)
+
+
+def fix_broken_tests(tasks: list) -> int:
+    """Fix tasks with broken test_list and inject helper functions into test_setup_code.
+    Returns the number of tasks fixed."""
+    # Bug 2: replace entire test_list for tasks with undefined variables
+    fixes = {
+        "HumanEval/32": [
+            "assert math.fabs(poly([1, 2], find_zero([1, 2]))) < 1e-4",
+            "assert math.fabs(poly([1, 0, -1], find_zero([1, 0, -1]))) < 1e-4",
+            "assert math.fabs(poly([-6, 11, -6, 1], find_zero([-6, 11, -6, 1]))) < 1e-4",
+            "assert math.fabs(poly([1, 1], find_zero([1, 1]))) < 1e-4",
+            "assert math.fabs(poly([2, -3, 1], find_zero([2, -3, 1]))) < 1e-4",
+        ],
+        "HumanEval/38": [
+            "assert decode_cyclic(encode_cyclic('')) == ''",
+            "assert decode_cyclic(encode_cyclic('hello')) == 'hello'",
+            "assert decode_cyclic(encode_cyclic('abcdefghij')) == 'abcdefghij'",
+            "assert decode_cyclic(encode_cyclic('a')) == 'a'",
+            "assert decode_cyclic(encode_cyclic('ab')) == 'ab'",
+            "assert decode_cyclic(encode_cyclic('abcabcabcabc')) == 'abcabcabcabc'",
+        ],
+        "HumanEval/50": [
+            "assert decode_shift(encode_shift('')) == ''",
+            "assert decode_shift(encode_shift('hello')) == 'hello'",
+            "assert decode_shift(encode_shift('abcdefghijklmnopqrstuvwxyz')) == 'abcdefghijklmnopqrstuvwxyz'",
+            "assert decode_shift(encode_shift('a')) == 'a'",
+            "assert decode_shift(encode_shift('test string here')) == 'test string here'",
+        ],
+    }
+    # Bug 2: trim broken trailing tests (undefined vars + for-loop garbage from multi-line joiner)
+    trim_last = {
+        "HumanEval/44": 5,   # test[5] has 'for x in range' joined from multi-line
+        "HumanEval/53": 4,   # test[4] has 'for i in range' joined from multi-line
+        "HumanEval/151": 5,  # test[5] has trailing garbage from multi-line
+    }
+    count = 0
+    for task in tasks:
+        tid = task["task_id"]
+        if tid in fixes:
+            task["test_list"] = fixes[tid]
+            count += 1
+            print(f"  Fixed {tid}: replaced test_list ({len(fixes[tid])} tests)")
+        elif tid in trim_last:
+            n = trim_last[tid]
+            old_len = len(task["test_list"])
+            task["test_list"] = task["test_list"][:n]
+            count += 1
+            print(f"  Fixed {tid}: trimmed test_list from {old_len} to {n}")
+
+    # Bug 3: inject helper functions from prompt into test_setup_code
+    helpers_injected = 0
+    for task in tasks:
+        helpers = extract_helper_functions(task["prompt"], task["entry_point"])
+        if helpers:
+            existing_setup = task.get("test_setup_code", "")
+            task["test_setup_code"] = (existing_setup + "\n\n" + helpers).strip()
+            helpers_injected += 1
+    if helpers_injected:
+        print(f"  Injected helper functions into test_setup_code for {helpers_injected} tasks")
+
+    return count
 
 
 def load_via_evalplus():
@@ -134,6 +229,21 @@ def load_via_evalplus():
     return tasks
 
 
+def validate_tests(tasks: list) -> int:
+    """Validate all test_list entries for syntax errors.
+    Returns the number of broken tests found."""
+    broken = 0
+    for task in tasks:
+        tid = task["task_id"]
+        for i, test in enumerate(task["test_list"]):
+            try:
+                compile(test, "<test>", "exec")
+            except SyntaxError as e:
+                print(f"  BROKEN {tid} test[{i}]: SyntaxError — {e.msg}")
+                broken += 1
+    return broken
+
+
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -148,14 +258,29 @@ def main():
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Fix known broken tests
+    print("Fixing broken tests...")
+    fixed = fix_broken_tests(tasks)
+    print(f"  {fixed} tasks fixed")
+
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         for task in tasks:
             f.write(json.dumps(task, ensure_ascii=False, cls=SafeEncoder) + "\n")
 
     # Stats
     with_plus = sum(1 for t in tasks if t["test_list_plus"])
+    total_tests = sum(len(t["test_list"]) for t in tasks)
     print(f"Wrote {len(tasks)} tasks to {OUT_PATH}")
     print(f"  {with_plus}/{len(tasks)} have plus tests")
+
+    # Validation
+    print("Validating tests...")
+    broken = validate_tests(tasks)
+    if broken == 0:
+        print(f"  Validation: {len(tasks)}/{len(tasks)} tasks OK, {total_tests} tests checked, 0 broken")
+    else:
+        print(f"  WARNING: {broken} broken tests found!", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
