@@ -25,7 +25,10 @@
 - `judgeStrategy` and `noJudge` saved in report metadata
 - All benchmark results (6 models × 2 datasets) re-extracted with fixed `extractPythonCode` v2.0 for consistency
 - MiniMax M2.7 dropped from v2.0 (108 empty codes from thinking model token budget issue)
-- Default judges: Kimi K2.5 + Gemini 3 Flash Preview (Ollama Cloud), GLM-5 tiebreaker
+- Default judges: Kimi K2.5 (Judge1) + MiniMax M2.7 (Judge2) via Ollama Cloud, GLM-5 tiebreaker
+  - Gemini 3 Flash Preview dropped (too many parse failures)
+  - MiniMax M2.7 repurposed from generator to judge (thinking model works well for structured JSON output)
+- Judge retry: 1 automatic retry on parse failure before marking as failed, with debug logging
 
 ## [1.1.1] — 2026-03-15
 

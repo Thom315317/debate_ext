@@ -1336,11 +1336,16 @@ async function evaluateWithPanel(
     // ─── Round 1: independent scoring ───
     const round1Results = await Promise.all(
         judges.map(async (judge) => {
-            try {
-                const r = await judge.call(evalPrompt, timeout);
-                if (r.error) return { judge: judge.name, scores: null };
-                return { judge: judge.name, scores: parseScores(r.content, labels) };
-            } catch { return { judge: judge.name, scores: null }; }
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    const r = await judge.call(evalPrompt, timeout);
+                    if (r.error) { console.error(`\n  [${judge.name}] API error (attempt ${attempt + 1}): ${r.error.slice(0, 200)}`); continue; }
+                    const scores = parseScores(r.content, labels);
+                    if (!scores) { console.error(`\n  [${judge.name}] Parse fail (attempt ${attempt + 1}) — raw (500 chars): ${r.content.slice(0, 500)}`); continue; }
+                    return { judge: judge.name, scores };
+                } catch (e) { console.error(`\n  [${judge.name}] Exception (attempt ${attempt + 1}): ${String(e).slice(0, 200)}`); continue; }
+            }
+            return { judge: judge.name, scores: null };
         })
     );
 
@@ -1987,7 +1992,7 @@ function parseArgs(): Args {
     let claudeJudgeModel = 'claude-sonnet-4-5-20250929';
     let openaiJudgeModel = 'gpt-4.1';
     let judge1Model = 'kimi-k2.5:cloud';
-    let judge2Model = 'gemini-3-flash-preview:cloud';
+    let judge2Model = 'minimax-m2.7:cloud';
     let tiebreakerModel = 'glm-5:cloud';
     let judgeProvider: 'api' | 'ollama' = 'api';
     let tau = 2.0;
