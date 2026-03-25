@@ -1047,7 +1047,7 @@ function parseScores(
                 edgeCases: item.edgeCases ?? item.edge_cases ?? 5,
                 codeQuality: item.codeQuality ?? item.code_quality ?? 5,
                 readability: item.readability ?? 5,
-                total: item.total ?? 5,
+                total: Math.min(10, item.total ?? 5),
                 justification: item.justification ?? '',
                 risk_fail_prob: Math.max(0, Math.min(1, item.risk_fail_prob ?? 0.5)),
             };
