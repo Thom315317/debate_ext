@@ -2295,7 +2295,7 @@ async function main(): Promise<void> {
             ? (p: string, t: number) => callOllamaJudge(p, t, opts.tiebreakerModel)
             : (p: string, t: number) => callGemini(p, t, opts.tiebreakerModel);
         const rejudgedResults: TaskResult[] = [];
-        const rejudgeFingerprint = 'rejudge:' + opts.rejudgeFrom;
+        const rejudgeFingerprint = 'rejudge:' + path.basename(opts.rejudgeFrom);
         const rejudgeCheckpoint = loadCheckpoint(rejudgeFingerprint);
         const rejudgeCompleted = new Set<string>();
         if (rejudgeCheckpoint) {
